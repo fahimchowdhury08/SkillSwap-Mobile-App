@@ -1,0 +1,96 @@
+name: skillswap
+description: University peer-to-peer skill exchange mobile app
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ── Backend — Auth, DB, Storage, Realtime in one SDK ──────────
+  supabase_flutter: ^2.5.6
+
+  # ── Video Calling — 1-on-1 only, free, no API key ─────────────
+  jitsi_meet_flutter_sdk: ^10.0.0
+
+  # ── Camera preview on pre-join screen ─────────────────────────
+  camera: ^0.11.0+2
+
+  # ── UI Components ─────────────────────────────────────────────
+  cached_network_image: ^3.3.1
+  # Load and cache profile/community images from Supabase Storage URLs
+
+  shimmer: ^3.0.0
+  # Shimmer skeleton effect while data loads from Supabase
+
+  smooth_page_indicator: ^1.2.0
+  # Animated dots for onboarding PageView slides
+
+  flutter_rating_bar: ^4.0.1
+  # Star rating widget on rate_session_screen
+
+  confetti: ^0.7.0
+  # Confetti burst animation on match_moment_screen
+
+  lottie: ^3.1.2
+  # Lottie JSON animations for empty state illustrations
+
+  # ── Media & Files ─────────────────────────────────────────────
+  image_picker: ^1.1.2
+  # Pick profile photo, community icon, chat images from gallery/camera
+
+  file_picker: ^8.1.2
+  # Pick documents, certificates, community files (PDF, DOC, video)
+
+  # ── Permissions ───────────────────────────────────────────────
+  permission_handler: ^11.3.1
+  # Request camera, microphone, storage permissions at runtime
+
+  # ── Utilities ─────────────────────────────────────────────────
+  shared_preferences: ^2.3.2
+  # Store 'seen_onboarding' flag locally
+
+  intl: ^0.19.0
+  # Format dates ("Mon, 24 May") and times ("2:00 PM") for schedule
+
+  url_launcher: ^6.3.0
+  # Open LinkedIn URLs, article links, community video/file links, email support
+
+  timeago: ^3.6.1
+  # Show "2 minutes ago" timestamps in notifications and chat
+
+  uuid: ^4.4.2
+  # Generate unique IDs when needed locally
+
+  flutter_dotenv: ^5.2.1
+  # Load SUPABASE_URL and SUPABASE_ANON_KEY from .env file
+
+  # ── REMOVED packages (vs earlier versions) ────────────────────
+  # percent_indicator — removed (was only used for XP/gamification rings)
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  # No build_runner, no freezed, no json_serializable
+  # No code generation at all
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/icons/
+    - assets/fonts/
+    - .env
+  fonts:
+    - family: Nunito
+      fonts:
+        - asset: assets/fonts/Nunito-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Nunito-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Nunito-Regular.ttf
+          weight: 400
+          
