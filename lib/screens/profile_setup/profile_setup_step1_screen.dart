@@ -1,8 +1,9 @@
-
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:typed_data';
 import '../../theme.dart';
 import '../../supabase_service.dart';
-import '../../models/skill_model.dart';
 import '../../widgets/coral_button.dart';
 import '../../widgets/loading_spinner.dart';
 
@@ -16,66 +17,170 @@ class ProfileSetupStep1Screen extends StatefulWidget {
 
 class _ProfileSetupStep1ScreenState extends State<ProfileSetupStep1Screen> {
   // ── Controllers ───────────────────────────────────────────────
-  final _teachController = TextEditingController();
-  final _learnController = TextEditingController();
+  final _fullNameController    = TextEditingController();
+  final _dobController         = TextEditingController();
+  final _institutionController = TextEditingController();
 
   // ── State ──────────────────────────────────────────────────────
-  final List<String> _teachingSkills = [];
-  final List<String> _learningSkills = [];
-  bool _isLoading = false;
+  bool _isLoading      = false;
+  Uint8List? _imageBytes;
+  String? _occupation  = 'Student';
+  String? _passingYear = '2024';
+  DateTime? _selectedDob;
+
+  final List<String> _occupations = [
+    'Student',
+    'Developer',
+    'Designer',
+    'Researcher',
+    'Other',
+  ];
+
+  final List<String> _passingYears = [
+    '2024', '2025', '2026', '2027', '2028', '2029',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadExistingData();
+  }
 
   @override
   void dispose() {
-    _teachController.dispose();
-    _learnController.dispose();
+    _fullNameController.dispose();
+    _dobController.dispose();
+    _institutionController.dispose();
     super.dispose();
   }
 
-  // ── Add a teaching skill ───────────────────────────────────────
-  void _addTeachingSkill() {
-    final skill = _teachController.text.trim();
-    if (skill.isEmpty) return;
-    if (_teachingSkills.contains(skill)) {
-      _teachController.clear();
-      return;
+  // ── Load existing data ─────────────────────────────────────────
+  Future<void> _loadExistingData() async {
+    try {
+      final userId = SupabaseService.currentUserId;
+      if (userId == null) return;
+      final res = await SupabaseService.client
+          .from('users')
+          .select()
+          .eq('id', userId)
+          .single();
+
+      setState(() {
+        _fullNameController.text    = res['full_name'] ?? '';
+        _institutionController.text = res['institution'] ?? '';
+        _occupation  = res['occupation'] ?? 'Student';
+        _passingYear = res['passing_year']?.toString() ?? '2024';
+      });
+
+      // Load existing date of birth
+      final dobStr = res['date_of_birth'] as String?;
+      if (dobStr != null && dobStr.isNotEmpty) {
+        final parts = dobStr.split('-');
+        if (parts.length == 3) {
+          setState(() {
+            _selectedDob = DateTime(
+              int.parse(parts[0]),
+              int.parse(parts[1]),
+              int.parse(parts[2]),
+            );
+            _dobController.text =
+                '${parts[2].padLeft(2, '0')}/'
+                '${parts[1].padLeft(2, '0')}/'
+                '${parts[0]}';
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Load existing data error: $e');
     }
-    setState(() {
-      _teachingSkills.add(skill);
-      _teachController.clear();
-    });
   }
 
-  // ── Add a learning skill ───────────────────────────────────────
-  void _addLearningSkill() {
-    final skill = _learnController.text.trim();
-    if (skill.isEmpty) return;
-    if (_learningSkills.contains(skill)) {
-      _learnController.clear();
-      return;
-    }
-    setState(() {
-      _learningSkills.add(skill);
-      _learnController.clear();
-    });
-  }
-
-  // ── Remove a skill ─────────────────────────────────────────────
-  void _removeTeaching(String skill) {
-    setState(() => _teachingSkills.remove(skill));
-  }
-
-  void _removeLearning(String skill) {
-    setState(() => _learningSkills.remove(skill));
-  }
-
-  // ── Save skills to Supabase ────────────────────────────────────
-  Future<void> _saveAndContinue() async {
-    if (_teachingSkills.isEmpty || _learningSkills.isEmpty) {
+  // ── Pick photo ─────────────────────────────────────────────────
+  Future<void> _pickPhoto() async {
+    try {
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 70,
+        maxWidth: 800,
+      );
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      setState(() => _imageBytes = bytes);
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Please add at least one skill you have and one you want to learn',
+          content: Text('Could not pick image. Please try again.'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+    }
+  }
+
+  // ── Upload photo ───────────────────────────────────────────────
+  Future<String?> _uploadPhoto(String userId) async {
+    if (_imageBytes == null) return null;
+    try {
+      final fileName = 'avatar_$userId.jpg';
+      await SupabaseService.client.storage
+          .from('avatars')
+          .uploadBinary(
+            fileName,
+            _imageBytes!,
+            fileOptions: const FileOptions(
+              contentType: 'image/jpeg',
+              upsert: true,
+            ),
+          );
+      return SupabaseService.client.storage
+          .from('avatars')
+          .getPublicUrl(fileName);
+    } catch (e) {
+      debugPrint('Upload photo error: $e');
+      return null;
+    }
+  }
+
+  // ── Pick date ──────────────────────────────────────────────────
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDob ?? DateTime(2000, 1, 1),
+      firstDate: DateTime(1950),
+      lastDate: DateTime.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: AppColors.indigo,
+              onPrimary: Colors.white,
+              surface: AppColors.cardSurface,
+              onSurface: AppColors.textPrimary,
+            ),
           ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      setState(() {
+        _selectedDob = picked;
+        _dobController.text =
+            '${picked.day.toString().padLeft(2, '0')}/'
+            '${picked.month.toString().padLeft(2, '0')}/'
+            '${picked.year}';
+      });
+    }
+  }
+
+  // ── Next step ──────────────────────────────────────────────────
+  Future<void> _next() async {
+    if (_fullNameController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter your full name'),
           backgroundColor: AppColors.red,
         ),
       );
@@ -85,44 +190,44 @@ class _ProfileSetupStep1ScreenState extends State<ProfileSetupStep1Screen> {
     setState(() => _isLoading = true);
 
     try {
-      final supabase = SupabaseService.client;
-      final userId = SupabaseService.currentUserId!;
+      final userId    = SupabaseService.currentUserId!;
+      final avatarUrl = await _uploadPhoto(userId);
 
-      // Insert teaching skills
-      for (final skill in _teachingSkills) {
-        await supabase.from('skills').insert({
-          'user_id':    userId,
-          'name':       skill,
-          'category':   SkillModel.detectCategory(skill),
-          'is_teaching': true,
-        });
+      final updateData = <String, dynamic>{
+        'full_name':    _fullNameController.text.trim(),
+        'institution':  _institutionController.text.trim(),
+        'occupation':   _occupation,
+        'passing_year': int.tryParse(_passingYear ?? ''),
+      };
+
+      // Only save avatar if uploaded
+      if (avatarUrl != null) {
+        updateData['avatar_url'] = avatarUrl;
       }
 
-      // Insert learning skills
-      for (final skill in _learningSkills) {
-        await supabase.from('skills').insert({
-          'user_id':    userId,
-          'name':       skill,
-          'category':   SkillModel.detectCategory(skill),
-          'is_teaching': false,
-        });
+      // Only save date of birth if user picked one
+      if (_selectedDob != null) {
+        updateData['date_of_birth'] =
+            '${_selectedDob!.year}-'
+            '${_selectedDob!.month.toString().padLeft(2, '0')}-'
+            '${_selectedDob!.day.toString().padLeft(2, '0')}';
       }
+
+      await SupabaseService.client
+          .from('users')
+          .update(updateData)
+          .eq('id', userId);
 
       if (!mounted) return;
-
-      // Navigate to home
-      Navigator.pushNamedAndRemoveUntil(
-        context,
-        '/home',
-        (route) => false,
-      );
+      Navigator.pushNamed(context, '/profile-setup-2');
 
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Something went wrong. Please try again.'),
+        SnackBar(
+          content: Text('Error: $e'),
           backgroundColor: AppColors.red,
+          duration: const Duration(seconds: 6),
         ),
       );
     } finally {
@@ -134,290 +239,436 @@ class _ProfileSetupStep1ScreenState extends State<ProfileSetupStep1Screen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
+      appBar: AppBar(
+        backgroundColor: AppColors.background,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back_ios_rounded,
+            color: AppColors.textPrimary,
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'SkillSwap',
+          style: TextStyle(
+            fontFamily: 'Nunito',
+            fontWeight: FontWeight.w700,
+            fontSize: 18,
+            color: AppColors.indigo,
+          ),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(4),
+          child: Container(
+            height: 4,
+            margin: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xl,
+            ),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(2),
+              color: AppColors.elevated,
+            ),
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: 0.5,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: AppColors.indigo,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
       body: LoadingOverlay(
         isLoading: _isLoading,
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(AppSpacing.xl),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.xl),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
 
-                const SizedBox(height: AppSpacing.lg),
+              // ── Step label ───────────────────────────
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'PERSONAL INFO',
+                    style: TextStyle(
+                      fontFamily: 'Nunito',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                      color: AppColors.indigo,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                  Text(
+                    'Step 1 of 2',
+                    style: AppTextStyles.caption,
+                  ),
+                ],
+              ),
 
-                // ── Progress indicator ───────────────────────
-                Row(
+              const SizedBox(height: AppSpacing.lg),
+
+              // ── Heading ──────────────────────────────
+              const Text(
+                'Set Up Your Profile',
+                style: AppTextStyles.heading1,
+              ),
+
+              const SizedBox(height: AppSpacing.xs),
+
+              const Text(
+                'Tell us about yourself to find your perfect skill match.',
+                style: AppTextStyles.body,
+              ),
+
+              const SizedBox(height: AppSpacing.xl),
+
+              // ── Avatar picker ────────────────────────
+              Center(
+                child: GestureDetector(
+                  onTap: _pickPhoto,
+                  child: Stack(
+                    children: [
+                      Container(
+                        width: 100,
+                        height: 100,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: AppColors.indigoCoralGradient,
+                        ),
+                        padding: const EdgeInsets.all(3),
+                        child: ClipOval(
+                          child: _imageBytes != null
+                              ? Image.memory(
+                                  _imageBytes!,
+                                  fit: BoxFit.cover,
+                                )
+                              : Container(
+                                  color: AppColors.cardSurface,
+                                  child: const Icon(
+                                    Icons.person_outline_rounded,
+                                    size: 48,
+                                    color: AppColors.textMuted,
+                                  ),
+                                ),
+                        ),
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: Container(
+                          width: 28,
+                          height: 28,
+                          decoration: const BoxDecoration(
+                            color: AppColors.indigo,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.edit_rounded,
+                            size: 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: AppSpacing.xs),
+
+              const Center(
+                child: Text(
+                  'UPLOAD PHOTO',
+                  style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11,
+                    color: AppColors.textMuted,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: AppSpacing.xl),
+
+              // ── Form fields ──────────────────────────
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.cardSurface,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
                   children: [
-                    Expanded(
-                      child: Container(
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: AppColors.indigo,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
+
+                    // Full Name
+                    _buildFormField(
+                      controller: _fullNameController,
+                      label: 'Full Name',
+                      hint: 'Fahim Chowdhury',
                     ),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: Container(
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: AppColors.elevated,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
 
-                const SizedBox(height: AppSpacing.sm),
+                    _buildDivider(),
 
-                const Text(
-                  'Step 1 of 2',
-                  style: AppTextStyles.label,
-                ),
-
-                const SizedBox(height: AppSpacing.xl),
-
-                // ── Heading ──────────────────────────────────
-                const Text(
-                  'What can you teach?',
-                  style: AppTextStyles.heading1,
-                ),
-
-                const SizedBox(height: AppSpacing.sm),
-
-                const Text(
-                  'Add at least 1 skill to get matched with others',
-                  style: AppTextStyles.body,
-                ),
-
-                const SizedBox(height: AppSpacing.xl),
-
-                // ── Skills I Have section ────────────────────
-                _buildSectionLabel(
-                  '⭐ Skills I Have',
-                  AppColors.indigo,
-                ),
-
-                const SizedBox(height: AppSpacing.sm),
-
-                // Teaching skill input
-                _buildSkillInput(
-                  controller: _teachController,
-                  hint: 'e.g. Python, UI/UX Design, Marketing',
-                  color: AppColors.indigo,
-                  onAdd: _addTeachingSkill,
-                ),
-
-                const SizedBox(height: AppSpacing.md),
-
-                // Teaching skill chips
-                if (_teachingSkills.isNotEmpty)
-                  Wrap(
-                    spacing: AppSpacing.sm,
-                    runSpacing: AppSpacing.sm,
-                    children: _teachingSkills.map((skill) {
-                      return _buildChip(
-                        skill,
-                        AppColors.indigo,
-                        () => _removeTeaching(skill),
-                      );
-                    }).toList(),
-                  ),
-
-                const SizedBox(height: AppSpacing.xl),
-
-                // ── Skills I Want to Learn section ───────────
-                _buildSectionLabel(
-                  '🎯 I Want to Learn',
-                  AppColors.coral,
-                ),
-
-                const SizedBox(height: AppSpacing.sm),
-
-                // Learning skill input
-                _buildSkillInput(
-                  controller: _learnController,
-                  hint: 'e.g. Flutter, Data Science, Photography',
-                  color: AppColors.coral,
-                  onAdd: _addLearningSkill,
-                ),
-
-                const SizedBox(height: AppSpacing.md),
-
-                // Learning skill chips
-                if (_learningSkills.isNotEmpty)
-                  Wrap(
-                    spacing: AppSpacing.sm,
-                    runSpacing: AppSpacing.sm,
-                    children: _learningSkills.map((skill) {
-                      return _buildChip(
-                        skill,
-                        AppColors.coral,
-                        () => _removeLearning(skill),
-                      );
-                    }).toList(),
-                  ),
-
-                const SizedBox(height: AppSpacing.xxl),
-
-                // ── Find Matches button ──────────────────────
-                CoralButton(
-                  label: 'Find My Matches →',
-                  onTap: _isLoading ? null : _saveAndContinue,
-                  isLoading: _isLoading,
-                ),
-
-                const SizedBox(height: AppSpacing.md),
-
-                // ── Skip link ────────────────────────────────
-                Center(
-                  child: TextButton(
-                    onPressed: () {
-                      Navigator.pushNamedAndRemoveUntil(
-                        context,
-                        '/home',
-                        (route) => false,
-                      );
-                    },
-                    child: const Text(
-                      'Skip for now',
-                      style: TextStyle(
-                        color: AppColors.textMuted,
-                        fontFamily: 'Nunito',
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: AppSpacing.lg),
-
-              ],
-            ),
-          ),
+// Date of Birth — tap calendar icon OR type manually
+Padding(
+  padding: const EdgeInsets.symmetric(
+    horizontal: AppSpacing.md,
+    vertical: AppSpacing.sm,
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text(
+        'Date of Birth',
+        style: TextStyle(
+          fontFamily: 'Nunito',
+          fontWeight: FontWeight.w600,
+          fontSize: 12,
+          color: AppColors.textMuted,
         ),
       ),
-    );
-  }
-
-  // ── Section label builder ──────────────────────────────────────
-  Widget _buildSectionLabel(String text, Color color) {
-    return Text(
-      text,
-      style: TextStyle(
-        fontFamily: 'Nunito',
-        fontWeight: FontWeight.w700,
-        fontSize: 16,
-        color: color,
-      ),
-    );
-  }
-
-  // ── Skill input row builder ────────────────────────────────────
-  Widget _buildSkillInput({
-    required TextEditingController controller,
-    required String hint,
-    required Color color,
-    required VoidCallback onAdd,
-  }) {
-    return Row(
-      children: [
-
-        // Text field
-        Expanded(
-          child: TextField(
-            controller: controller,
-            style: AppTextStyles.bodyBold,
-            onSubmitted: (_) => onAdd(),
-            decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: const TextStyle(
-                color: AppColors.textMuted,
-                fontFamily: 'Nunito',
-                fontSize: 13,
-              ),
-              filled: true,
-              fillColor: AppColors.cardSurface,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: color, width: 1.5),
-              ),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.md,
-                vertical: AppSpacing.md,
-              ),
-            ),
-          ),
-        ),
-
-        const SizedBox(width: AppSpacing.sm),
-
-        // Add button
-        GestureDetector(
-          onTap: onAdd,
-          child: Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Icon(
-              Icons.add_rounded,
-              color: Colors.white,
-              size: 24,
-            ),
-          ),
-        ),
-
-      ],
-    );
-  }
-
-  // ── Skill chip builder ─────────────────────────────────────────
-  Widget _buildChip(String skill, Color color, VoidCallback onRemove) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.md,
-        vertical: AppSpacing.xs + 2,
-      ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(100),
-        border: Border.all(
-          color: color.withValues(alpha: 0.4),
-          width: 1,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+      const SizedBox(height: 4),
+      Row(
         children: [
-          Text(
-            skill,
-            style: TextStyle(
-              fontFamily: 'Nunito',
-              fontWeight: FontWeight.w600,
-              fontSize: 13,
-              color: color,
+          Expanded(
+            child: TextField(
+              controller: _dobController,
+              style: AppTextStyles.bodyBold,
+              keyboardType: TextInputType.datetime,
+              onChanged: (value) {
+                if (value.length == 10) {
+                  final parts = value.split('/');
+                  if (parts.length == 3) {
+                    try {
+                      final d = int.parse(parts[0]);
+                      final m = int.parse(parts[1]);
+                      final y = int.parse(parts[2]);
+                      setState(() {
+                        _selectedDob = DateTime(y, m, d);
+                      });
+                    } catch (_) {}
+                  }
+                }
+              },
+              decoration: const InputDecoration(
+                hintText: 'DD/MM/YYYY',
+                hintStyle: TextStyle(
+                  color: AppColors.textMuted,
+                  fontFamily: 'Nunito',
+                  fontSize: 14,
+                ),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                isDense: true,
+                contentPadding: EdgeInsets.zero,
+              ),
             ),
           ),
-          const SizedBox(width: 6),
           GestureDetector(
-            onTap: onRemove,
-            child: Icon(
-              Icons.close_rounded,
-              size: 16,
-              color: color,
+            onTap: _pickDate,
+            child: const Icon(
+              Icons.calendar_today_outlined,
+              size: 18,
+              color: AppColors.indigo,
             ),
           ),
         ],
       ),
+    ],
+  ),
+),
+_buildDivider(),
+                    // Occupation
+                    _buildDropdownField(
+                      label: 'Occupation',
+                      value: _occupation,
+                      items: _occupations,
+                      onChanged: (val) =>
+                          setState(() => _occupation = val),
+                    ),
+
+                    _buildDivider(),
+
+                    // Institution
+                    _buildFormField(
+                      controller: _institutionController,
+                      label: 'Institution Name',
+                      hint: 'Leading University',
+                      suffix: const Icon(
+                        Icons.school_outlined,
+                        size: 18,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+
+                    _buildDivider(),
+
+                    // Passing Year
+                    _buildDropdownField(
+                      label: 'Passing Year',
+                      value: _passingYear,
+                      items: _passingYears,
+                      onChanged: (val) =>
+                          setState(() => _passingYear = val),
+                      suffix: const Icon(
+                        Icons.check_box_outlined,
+                        size: 18,
+                        color: AppColors.indigo,
+                      ),
+                    ),
+
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: AppSpacing.xxl),
+
+              // ── Next button ──────────────────────────
+              CoralButton(
+                label: 'Next →',
+                onTap: _isLoading ? null : _next,
+                isLoading: _isLoading,
+              ),
+
+              const SizedBox(height: AppSpacing.lg),
+
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Form field builder ─────────────────────────────────────────
+  Widget _buildFormField({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    TextInputType? keyboardType,
+    Widget? suffix,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'Nunito',
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+              color: AppColors.textMuted,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  keyboardType: keyboardType,
+                  style: AppTextStyles.bodyBold,
+                  decoration: InputDecoration(
+                    hintText: hint,
+                    hintStyle: const TextStyle(
+                      color: AppColors.textMuted,
+                      fontFamily: 'Nunito',
+                      fontSize: 14,
+                    ),
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+              ),
+              if (suffix != null) suffix,
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Dropdown field builder ─────────────────────────────────────
+  Widget _buildDropdownField({
+    required String label,
+    required String? value,
+    required List<String> items,
+    required ValueChanged<String?> onChanged,
+    Widget? suffix,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'Nunito',
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+              color: AppColors.textMuted,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: value,
+                    isDense: true,
+                    isExpanded: true,
+                    dropdownColor: AppColors.cardSurface,
+                    style: AppTextStyles.bodyBold,
+                    icon: const SizedBox.shrink(),
+                    items: items.map((item) {
+                      return DropdownMenuItem(
+                        value: item,
+                        child: Text(item),
+                      );
+                    }).toList(),
+                    onChanged: onChanged,
+                  ),
+                ),
+              ),
+              suffix ??
+                  const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    color: AppColors.textMuted,
+                    size: 20,
+                  ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Divider ────────────────────────────────────────────────────
+  Widget _buildDivider() {
+    return const Divider(
+      color: AppColors.elevated,
+      height: 1,
+      indent: AppSpacing.md,
+      endIndent: AppSpacing.md,
     );
   }
 }

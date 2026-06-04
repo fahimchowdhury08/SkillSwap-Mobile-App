@@ -1,4 +1,4 @@
-
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SupabaseService {
@@ -23,7 +23,7 @@ class SupabaseService {
         'is_read': false,
       });
     } catch (e) {
-      print('Notification error: $e');
+      debugPrint('Notification error: $e');
     }
   }
 
@@ -35,7 +35,7 @@ class SupabaseService {
           .update({'is_available_now': false})
           .eq('id', currentUserId!);
     } catch (e) {
-      print('Availability reset error: $e');
+      debugPrint('Availability reset error: $e');
     }
   }
 }

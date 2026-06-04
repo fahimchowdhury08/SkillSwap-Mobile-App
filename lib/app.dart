@@ -19,6 +19,7 @@ import 'screens/menu/availability_screen.dart';
 import 'screens/menu/settings/change_password_screen.dart';
 import 'screens/menu/settings/about_screen.dart';
 
+
 class SkillSwapApp extends StatelessWidget {
   const SkillSwapApp({super.key});
 
@@ -39,7 +40,7 @@ class SkillSwapApp extends StatelessWidget {
 
         // ── Profile Setup ─────────────────────────────────────────
         '/profile-setup-1':   (_) => const ProfileSetupStep1Screen(),
-        '/profile-setup-2':   (_) => const ProfileSetupStep2Screen(),
+        '/profile-setup-2': (_) => const ProfileSetupStep2Screen(),
 
         // ── Main ──────────────────────────────────────────────────
         '/home':              (_) => const HomeScreen(),

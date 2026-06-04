@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import '../../theme.dart';
@@ -19,7 +18,6 @@ class MessagesScreen extends StatefulWidget {
 }
 
 class _MessagesScreenState extends State<MessagesScreen> {
-  // ── State ──────────────────────────────────────────────────────
   List<Map<String, dynamic>> _conversations = [];
   bool _isLoading = true;
 
@@ -29,14 +27,12 @@ class _MessagesScreenState extends State<MessagesScreen> {
     _loadConversations();
   }
 
-  // ── Load all accepted swaps as conversations ───────────────────
   Future<void> _loadConversations() async {
     setState(() => _isLoading = true);
     try {
       final userId = SupabaseService.currentUserId;
       if (userId == null) return;
 
-      // Get all accepted swaps
       final swapsRes = await SupabaseService.client
           .from('swaps')
           .select()
@@ -49,7 +45,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
       for (final row in swapsRes as List) {
         final swap = SwapModel.fromJson(row);
 
-        // Get other user
         final otherId = swap.senderId == userId
             ? swap.receiverId
             : swap.senderId;
@@ -62,7 +57,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
         final otherUser = UserModel.fromJson(userRes);
 
-        // Get latest message
         final msgRes = await SupabaseService.client
             .from('messages')
             .select()
@@ -75,7 +69,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
           lastMessage = MessageModel.fromJson(msgRes.first);
         }
 
-        // Count unread messages
         final unreadRes = await SupabaseService.client
             .from('messages')
             .select('id')
@@ -93,7 +86,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
         });
       }
 
-      // Sort by latest message
       conversations.sort((a, b) {
         final aMsg = a['lastMessage'] as MessageModel?;
         final bMsg = b['lastMessage'] as MessageModel?;
@@ -154,7 +146,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
     );
   }
 
-  // ── Conversation row ───────────────────────────────────────────
   Widget _buildConversationRow(Map<String, dynamic> conv) {
     final swap        = conv['swap'] as SwapModel;
     final otherUser   = conv['otherUser'] as UserModel;
@@ -182,7 +173,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
         child: Row(
           children: [
 
-            // ── Avatar ─────────────────────────────────
             GradientAvatar(
               imageUrl: otherUser.avatarUrl,
               name: otherUser.displayName,
@@ -191,14 +181,12 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
             const SizedBox(width: AppSpacing.md),
 
-            // ── Name + last message ─────────────────────
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
-                    mainAxisAlignment:
-                        MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
                         otherUser.displayName,
@@ -239,7 +227,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
             const SizedBox(width: AppSpacing.sm),
 
-            // ── Unread badge ────────────────────────────
             if (hasUnread)
               Container(
                 width: 20,
@@ -267,7 +254,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
     );
   }
 
-  // ── Message preview text ───────────────────────────────────────
   String _getPreview(MessageModel? message) {
     if (message == null) return 'Say hello! 👋';
     switch (message.messageType) {

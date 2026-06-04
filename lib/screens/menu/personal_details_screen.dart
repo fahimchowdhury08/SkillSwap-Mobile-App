@@ -1,8 +1,7 @@
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'dart:io';
+import 'dart:typed_data';
 import '../../theme.dart';
 import '../../supabase_service.dart';
 import '../../models/skill_model.dart';
@@ -10,6 +9,7 @@ import '../../widgets/coral_button.dart';
 import '../../widgets/loading_spinner.dart';
 import '../../widgets/gradient_avatar.dart';
 import 'availability_screen.dart';
+import 'skill_verification_screen.dart';
 
 class PersonalDetailsScreen extends StatefulWidget {
   const PersonalDetailsScreen({super.key});
@@ -29,7 +29,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
   bool _isSaving     = false;
   bool _showAddSkill = false;
   String? _avatarUrl;
-  File? _selectedAvatar;
+  Uint8List? _avatarBytes;
   List<SkillModel> _teachingSkills = [];
 
   @override
@@ -81,6 +81,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     }
   }
 
+  // ── Pick avatar ────────────────────────────────────────────────
   Future<void> _pickAvatar() async {
     try {
       final picker = ImagePicker();
@@ -90,7 +91,8 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
         maxWidth: 800,
       );
       if (picked == null) return;
-      setState(() => _selectedAvatar = File(picked.path));
+      final bytes = await picked.readAsBytes();
+      setState(() => _avatarBytes = bytes);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -102,16 +104,16 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     }
   }
 
+  // ── Upload avatar ──────────────────────────────────────────────
   Future<String?> _uploadAvatar(String userId) async {
-    if (_selectedAvatar == null) return _avatarUrl;
+    if (_avatarBytes == null) return _avatarUrl;
     try {
       final fileName = 'avatar_$userId.jpg';
-      final bytes    = await _selectedAvatar!.readAsBytes();
       await SupabaseService.client.storage
           .from('avatars')
           .uploadBinary(
             fileName,
-            bytes,
+            _avatarBytes!,
             fileOptions: const FileOptions(
               contentType: 'image/jpeg',
               upsert: true,
@@ -126,6 +128,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     }
   }
 
+  // ── Add new skill ──────────────────────────────────────────────
   Future<void> _addSkill() async {
     final skillName = _newSkillController.text.trim();
     if (skillName.isEmpty) return;
@@ -158,6 +161,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     }
   }
 
+  // ── Save changes ───────────────────────────────────────────────
   Future<void> _saveChanges() async {
     setState(() => _isSaving = true);
     try {
@@ -277,12 +281,14 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     );
   }
 
+  // ── Avatar section ─────────────────────────────────────────────
   Widget _buildAvatarSection() {
     return GestureDetector(
       onTap: _pickAvatar,
       child: Stack(
         children: [
-          _selectedAvatar != null
+          // Avatar display
+          _avatarBytes != null
               ? Container(
                   width: 90,
                   height: 90,
@@ -292,8 +298,8 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
                   ),
                   padding: const EdgeInsets.all(2.5),
                   child: ClipOval(
-                    child: Image.file(
-                      _selectedAvatar!,
+                    child: Image.memory(
+                      _avatarBytes!,
                       fit: BoxFit.cover,
                     ),
                   ),
@@ -302,6 +308,8 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
                   imageUrl: _avatarUrl,
                   size: 90,
                 ),
+
+          // Camera icon
           Positioned(
             bottom: 0,
             right: 0,
@@ -324,6 +332,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     );
   }
 
+  // ── Skills section ─────────────────────────────────────────────
   Widget _buildSkillsSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -428,15 +437,13 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
             children: _teachingSkills.map((skill) {
               return GestureDetector(
                 onTap: () {
-                  // TODO: Replace with real screen when built
-                  // Navigator.push(context, MaterialPageRoute(
-                  //   builder: (_) => SkillVerificationScreen(
-                  //     skillId: skill.id, skillName: skill.name),
-                  // ));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Verify ${skill.name} — coming soon'),
-                      backgroundColor: AppColors.indigo,
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SkillVerificationScreen(
+                        skillId:   skill.id,
+                        skillName: skill.name,
+                      ),
                     ),
                   );
                 },
@@ -478,23 +485,19 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
               );
             }).toList(),
           ),
-
       ],
     );
   }
 
+  // ── Availability tile ──────────────────────────────────────────
   Widget _buildAvailabilityTile() {
     return GestureDetector(
       onTap: () {
-        // TODO: Replace with real screen when built
-        // Navigator.push(context, MaterialPageRoute(
-        //   builder: (_) => const AvailabilityScreen(),
-        // ));
         Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (_) => const AvailabilityScreen(),
-            ),
+          context,
+          MaterialPageRoute(
+            builder: (_) => const AvailabilityScreen(),
+          ),
         );
       },
       child: Container(
@@ -535,6 +538,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     );
   }
 
+  // ── Read only field ────────────────────────────────────────────
   Widget _buildReadOnlyField({
     required String label,
     required String value,
@@ -566,6 +570,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     );
   }
 
+  // ── Editable field ─────────────────────────────────────────────
   Widget _buildEditableField({
     required TextEditingController controller,
     required String label,

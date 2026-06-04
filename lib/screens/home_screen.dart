@@ -12,9 +12,9 @@ import 'profile_setup/profile_setup_step2_screen.dart';
 import 'search/search_screen.dart';
 import 'profile/user_profile_screen.dart';
 import 'swap/swap_screen.dart';
+import 'swap/swap_proposal_sheet.dart';
 import 'notification_screen.dart';
 import 'messages/messages_screen.dart';
-
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -95,36 +95,137 @@ class _HomeScreenState extends State<HomeScreen> {
         .map((j) => j['name'] as String)
         .toList();
 
-    if (learningSkills.isEmpty) return;
+    List<UserModel> matches = [];
 
-    final matchedSkillsRes = await SupabaseService.client
-        .from('skills')
-        .select('user_id')
-        .eq('is_teaching', true)
-        .inFilter('name', learningSkills)
-        .neq('user_id', userId);
+    if (learningSkills.isNotEmpty) {
+      // Has learning skills — show matched users first
+      final matchedSkillsRes = await SupabaseService.client
+          .from('skills')
+          .select('user_id')
+          .eq('is_teaching', true)
+          .inFilter('name', learningSkills)
+          .neq('user_id', userId);
 
-    final matchedUserIds = (matchedSkillsRes as List)
-        .map((j) => j['user_id'] as String)
-        .toSet()
-        .toList();
-
-    if (matchedUserIds.isEmpty) return;
-
-    final usersRes = await SupabaseService.client
-        .from('users')
-        .select()
-        .inFilter('id', matchedUserIds);
-
-    setState(() {
-      _matches = (usersRes as List)
-          .map((j) => UserModel.fromJson(j))
+      final matchedUserIds = (matchedSkillsRes as List)
+          .map((j) => j['user_id'] as String)
+          .toSet()
           .toList();
-    });
+
+      if (matchedUserIds.isNotEmpty) {
+        final matchedUsersRes = await SupabaseService.client
+            .from('users')
+            .select()
+            .inFilter('id', matchedUserIds);
+
+        matches = (matchedUsersRes as List)
+            .map((j) => UserModel.fromJson(j))
+            .toList();
+      }
+
+      // Then get remaining users who have teaching skills
+      final remainingSkillsRes = await SupabaseService.client
+          .from('skills')
+          .select('user_id')
+          .eq('is_teaching', true)
+          .neq('user_id', userId);
+
+      final allTeacherIds = (remainingSkillsRes as List)
+          .map((j) => j['user_id'] as String)
+          .toSet()
+          .toList();
+
+      final remainingIds = allTeacherIds
+          .where((id) => !matchedUserIds.contains(id))
+          .toList();
+
+      if (remainingIds.isNotEmpty) {
+        final remainingUsersRes = await SupabaseService.client
+            .from('users')
+            .select()
+            .inFilter('id', remainingIds);
+
+        final remainingUsers = (remainingUsersRes as List)
+            .map((j) => UserModel.fromJson(j))
+            .toList();
+
+        matches.addAll(remainingUsers);
+      }
+
+    } else {
+      // No learning skills — show users who have teaching skills
+      final usersWithSkillsRes = await SupabaseService.client
+          .from('skills')
+          .select('user_id')
+          .eq('is_teaching', true)
+          .neq('user_id', userId);
+
+      final userIdsWithSkills = (usersWithSkillsRes as List)
+          .map((j) => j['user_id'] as String)
+          .toSet()
+          .toList();
+
+      if (userIdsWithSkills.isNotEmpty) {
+        final allUsersRes = await SupabaseService.client
+            .from('users')
+            .select()
+            .inFilter('id', userIdsWithSkills);
+
+        matches = (allUsersRes as List)
+            .map((j) => UserModel.fromJson(j))
+            .toList();
+      }
+    }
+
+    setState(() => _matches = matches);
   }
 
-  // ── Bottom nav screens ─────────────────────────────────────────
-  // TODO: Replace placeholders with real screens as they are built
+  // ── Show swap proposal sheet directly from home card ──────────
+  Future<void> _showSwapSheet(UserModel otherUser) async {
+    final skillsRes = await SupabaseService.client
+        .from('skills')
+        .select()
+        .eq('user_id', otherUser.id)
+        .eq('is_teaching', true);
+
+    final theirSkills = (skillsRes as List)
+        .map((j) => SkillModel.fromJson(j))
+        .toList();
+
+    if (!mounted) return;
+
+    if (_myTeachingSkills.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Add skills you can teach first'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+      return;
+    }
+
+    if (theirSkills.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This user has no teaching skills yet'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => SwapProposalSheet(
+        receiverId:             otherUser.id,
+        receiverName:           otherUser.displayName,
+        receiverTeachingSkills: theirSkills,
+        myTeachingSkills:       _myTeachingSkills,
+      ),
+    );
+  }
+
   List<Widget> get _screens => [
     _buildHomeFeed(),
     const SwapScreen(),
@@ -145,7 +246,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── App bar ────────────────────────────────────────────────────
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: AppColors.background,
@@ -207,7 +307,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Home feed ──────────────────────────────────────────────────
   Widget _buildHomeFeed() {
     return RefreshIndicator(
       color: AppColors.indigo,
@@ -220,15 +319,12 @@ class _HomeScreenState extends State<HomeScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
 
-            // ── Profile completion banner ──────────────────
             if (!_isProfileComplete) _buildCompletionBanner(),
 
-            // ── Search bar ─────────────────────────────────
             _buildSearchBar(),
 
             const SizedBox(height: AppSpacing.lg),
 
-            // ── Heading ────────────────────────────────────
             const Text(
               'Matched for You 🔥',
               style: AppTextStyles.heading2,
@@ -236,14 +332,13 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: AppSpacing.xs),
             Text(
               _matches.isEmpty
-                  ? 'Add learning skills to see matches'
+                  ? 'No users found'
                   : 'People who can teach what you want to learn',
               style: AppTextStyles.body,
             ),
 
             const SizedBox(height: AppSpacing.md),
 
-            // ── Grid ───────────────────────────────────────
             _matches.isEmpty
                 ? EmptyState(
                     icon: Icons.people_outline_rounded,
@@ -251,12 +346,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     subtitle: 'Add skills you want to learn to get matched',
                     buttonLabel: 'Update Skills',
                     onButtonTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Profile setup — coming soon'),
-                          backgroundColor: AppColors.indigo,
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ProfileSetupStep2Screen(),
                         ),
-                      );
+                      ).then((_) => _loadData());
                     },
                   )
                 : GridView.builder(
@@ -267,7 +362,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       crossAxisCount: 2,
                       crossAxisSpacing: AppSpacing.md,
                       mainAxisSpacing: AppSpacing.md,
-                      childAspectRatio: 0.75,
+                      childAspectRatio: 0.78,
                     ),
                     itemCount: _matches.length,
                     itemBuilder: (context, index) {
@@ -283,7 +378,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Profile completion banner ──────────────────────────────────
   Widget _buildCompletionBanner() {
     return GestureDetector(
       onTap: () {
@@ -335,7 +429,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Search bar ─────────────────────────────────────────────────
   Widget _buildSearchBar() {
     return GestureDetector(
       onTap: () {
@@ -375,140 +468,137 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ── Profile card ───────────────────────────────────────────────
+  // Tap card body → opens UserProfileScreen
+  // Tap Swap button → opens SwapProposalSheet directly
   Widget _buildProfileCard(UserModel user) {
-    return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => UserProfileScreen(
-              userId: user.id,
-              myTeachingSkills: _myTeachingSkills,
-            ),
-          ),
-        );
-      },
-      child: GlassCard(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+    return GlassCard(
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
 
-            Center(
-              child: GradientAvatar(
-                imageUrl: user.avatarUrl,
-                name: user.displayName,
-                size: 64,
-              ),
-            ),
+          // ── Tappable area — opens profile ──────────────
+          GestureDetector(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => UserProfileScreen(
+                    userId: user.id,
+                    myTeachingSkills: _myTeachingSkills,
+                  ),
+                ),
+              );
+            },
+            child: Column(
+              children: [
 
-            const SizedBox(height: AppSpacing.sm),
+                // Avatar
+                GradientAvatar(
+                  imageUrl: user.avatarUrl,
+                  name: user.displayName,
+                  size: 52,
+                ),
 
-            Center(
-              child: Text(
-                user.displayName,
-                style: AppTextStyles.bodyBold,
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
+                const SizedBox(height: AppSpacing.xs),
 
-            if (user.occupation != null)
-              Center(
-                child: Text(
-                  user.occupation!,
-                  style: AppTextStyles.caption,
+                // Name
+                Text(
+                  user.displayName,
+                  style: AppTextStyles.bodyBold.copyWith(fontSize: 12),
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-              ),
 
-            const Spacer(),
-
-            if (user.institution != null)
-              Row(
-                children: [
-                  const Icon(
-                    Icons.school_outlined,
-                    size: 12,
-                    color: AppColors.textMuted,
+                // Occupation
+                if (user.occupation != null)
+                  Text(
+                    user.occupation!,
+                    style: AppTextStyles.caption.copyWith(fontSize: 10),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      user.institution!,
-                      style: AppTextStyles.caption,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+
+                // Institution
+                if (user.institution != null)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.school_outlined,
+                        size: 10,
+                        color: AppColors.textMuted,
+                      ),
+                      const SizedBox(width: 2),
+                      Expanded(
+                        child: Text(
+                          user.institution!,
+                          style: AppTextStyles.caption.copyWith(fontSize: 10),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+
+                const SizedBox(height: AppSpacing.xs),
+
+                // Rating
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.star_rounded,
+                      size: 12,
+                      color: AppColors.gold,
                     ),
-                  ),
-                ],
-              ),
-
-            const SizedBox(height: AppSpacing.sm),
-
-            Row(
-              children: [
-                const Icon(
-                  Icons.star_rounded,
-                  size: 14,
-                  color: AppColors.gold,
+                    const SizedBox(width: 2),
+                    Text(
+                      user.avgRating.toStringAsFixed(1),
+                      style: AppTextStyles.caption.copyWith(fontSize: 10),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  user.avgRating.toStringAsFixed(1),
-                  style: AppTextStyles.caption,
-                ),
+
               ],
             ),
+          ),
 
-            const SizedBox(height: AppSpacing.sm),
+          const SizedBox(height: AppSpacing.xs),
 
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => UserProfileScreen(
-                        userId: user.id,
-                        myTeachingSkills: _myTeachingSkills,
-                      ),
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.coral,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(
-                    vertical: AppSpacing.sm,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(100),
-                  ),
+          // ── Swap button — opens proposal sheet directly ─
+          SizedBox(
+            width: double.infinity,
+            height: 28,
+            child: ElevatedButton(
+              onPressed: () => _showSwapSheet(user),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.coral,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: EdgeInsets.zero,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(100),
                 ),
-                child: const Text(
-                  'Swap →',
-                  style: TextStyle(
-                    fontFamily: 'Nunito',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 13,
-                  ),
+              ),
+              child: const Text(
+                'Swap →',
+                style: TextStyle(
+                  fontFamily: 'Nunito',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 11,
                 ),
               ),
             ),
+          ),
 
-          ],
-        ),
+        ],
       ),
     );
   }
 
-  // ── Bottom nav ─────────────────────────────────────────────────
   Widget _buildBottomNav() {
     return BottomNavigationBar(
       currentIndex: _currentIndex,
@@ -553,9 +643,6 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ── Temporary placeholder screens ─────────────────────────────────
-// These will be replaced one by one as real screens are built
-// Do NOT remove these until the real screen is ready
-
 class _PlaceholderScreen extends StatelessWidget {
   final String label;
   const _PlaceholderScreen({required this.label});
@@ -577,4 +664,3 @@ class _PlaceholderScreen extends StatelessWidget {
     );
   }
 }
-

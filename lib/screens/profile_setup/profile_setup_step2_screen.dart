@@ -1,13 +1,13 @@
-
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:io';
+import 'dart:typed_data';
 import '../../theme.dart';
 import '../../supabase_service.dart';
+import '../../models/skill_model.dart';
 import '../../widgets/coral_button.dart';
 import '../../widgets/loading_spinner.dart';
-import '../../widgets/gradient_avatar.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ProfileSetupStep2Screen extends StatefulWidget {
   const ProfileSetupStep2Screen({super.key});
@@ -18,160 +18,264 @@ class ProfileSetupStep2Screen extends StatefulWidget {
 }
 
 class _ProfileSetupStep2ScreenState extends State<ProfileSetupStep2Screen> {
-  // ── Controllers ───────────────────────────────────────────────
-  final _fullNameController    = TextEditingController();
-  final _institutionController = TextEditingController();
-  final _occupationController  = TextEditingController();
-  final _phoneController       = TextEditingController();
-  final _linkedinController    = TextEditingController();
+  final _teachSkillController = TextEditingController();
+  final _learnSkillController = TextEditingController();
 
-  // ── State ──────────────────────────────────────────────────────
-  bool _isLoading       = false;
-  bool _isSaving        = false;
-  String? _avatarUrl;
-  String? _selectedYear;
-  File? _selectedAvatar;
+  final List<String> _teachingSkills = [];
+  final List<String> _learningSkills = [];
 
-  final List<String> _passingYears = [
-    '2024', '2025', '2026', '2027', '2028', '2029',
-  ];
+  // Confirmed certs — stored in database
+  final List<Map<String, dynamic>> _confirmedCerts = [];
+
+  // Pending cert — picked but not yet confirmed
+  Map<String, dynamic>? _pendingCert;
+
+  bool _isLoading   = false;
+  bool _isUploading = false;
 
   @override
   void initState() {
     super.initState();
-    _loadExistingData();
+    _loadExistingSkills();
   }
 
   @override
   void dispose() {
-    _fullNameController.dispose();
-    _institutionController.dispose();
-    _occupationController.dispose();
-    _phoneController.dispose();
-    _linkedinController.dispose();
+    _teachSkillController.dispose();
+    _learnSkillController.dispose();
     super.dispose();
   }
 
-  // ── Load existing profile data ─────────────────────────────────
-  Future<void> _loadExistingData() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadExistingSkills() async {
     try {
       final userId = SupabaseService.currentUserId;
       if (userId == null) return;
-
       final res = await SupabaseService.client
-          .from('users')
+          .from('skills')
           .select()
-          .eq('id', userId)
-          .single();
+          .eq('user_id', userId);
 
       setState(() {
-        _fullNameController.text    = res['full_name'] ?? '';
-        _institutionController.text = res['institution'] ?? '';
-        _occupationController.text  = res['occupation'] ?? '';
-        _phoneController.text       = res['phone'] ?? '';
-        _linkedinController.text    = res['linkedin_url'] ?? '';
-        _avatarUrl                  = res['avatar_url'];
-        _selectedYear               = res['passing_year']?.toString();
+        for (final s in res as List) {
+          final skill = SkillModel.fromJson(s);
+          if (skill.isTeaching &&
+              !_teachingSkills.contains(skill.name)) {
+            _teachingSkills.add(skill.name);
+          } else if (!skill.isTeaching &&
+              !_learningSkills.contains(skill.name)) {
+            _learningSkills.add(skill.name);
+          }
+        }
       });
     } catch (e) {
-      debugPrint('Load profile error: $e');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+      debugPrint('Load skills error: $e');
     }
   }
 
-  // ── Pick profile photo ─────────────────────────────────────────
-  Future<void> _pickAvatar() async {
+  void _addTeachSkill() {
+    final skill = _teachSkillController.text.trim();
+    if (skill.isEmpty) return;
+    if (_teachingSkills.contains(skill)) {
+      _teachSkillController.clear();
+      return;
+    }
+    setState(() {
+      _teachingSkills.add(skill);
+      _teachSkillController.clear();
+    });
+  }
+
+  void _addLearnSkill() {
+    final skill = _learnSkillController.text.trim();
+    if (skill.isEmpty) return;
+    if (_learningSkills.contains(skill)) {
+      _learnSkillController.clear();
+      return;
+    }
+    setState(() {
+      _learningSkills.add(skill);
+      _learnSkillController.clear();
+    });
+  }
+
+  // ── Step 1 — Pick file and show pending preview ────────────────
+  Future<void> _pickCertificate() async {
     try {
-      final picker = ImagePicker();
-      final picked = await picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 70,
-        maxWidth: 800,
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
       );
-      if (picked == null) return;
-      setState(() => _selectedAvatar = File(picked.path));
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+
+      late final Uint8List bytes;
+      if (file.bytes != null) {
+        bytes = file.bytes!;
+      } else if (file.path != null) {
+        bytes = await File(file.path!).readAsBytes();
+      } else {
+        return;
+      }
+
+      // Show pending preview — not uploaded yet
+      setState(() {
+        _pendingCert = {
+          'name':  file.name,
+          'bytes': bytes,
+          'ext':   file.extension ?? 'jpg',
+        };
+      });
+
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Could not pick image. Please try again.'),
+          content: Text('Could not pick file. Please try again.'),
           backgroundColor: AppColors.red,
         ),
       );
     }
   }
 
-  // ── Upload avatar to Supabase Storage ─────────────────────────
-  Future<String?> _uploadAvatar(String userId) async {
-    if (_selectedAvatar == null) return _avatarUrl;
-    try {
-      final fileName = 'avatar_$userId.jpg';
-      final bytes    = await _selectedAvatar!.readAsBytes();
+  // ── Step 2 — Confirm: upload to storage + save to database ─────
+  Future<void> _confirmCertificate() async {
+    if (_pendingCert == null) return;
 
+    setState(() => _isUploading = true);
+
+    try {
+      final userId   = SupabaseService.currentUserId!;
+      final fileName =
+          'cert_${userId}_${DateTime.now().millisecondsSinceEpoch}'
+          '.${_pendingCert!['ext']}';
+      final bytes = _pendingCert!['bytes'] as Uint8List;
+
+      // Upload to storage
       await SupabaseService.client.storage
-          .from('avatars')
+          .from('certificates')
           .uploadBinary(
             fileName,
             bytes,
-            fileOptions: const FileOptions(contentType: 'image/jpeg', upsert: true),
+            fileOptions: const FileOptions(upsert: true),
           );
 
       final url = SupabaseService.client.storage
-          .from('avatars')
+          .from('certificates')
           .getPublicUrl(fileName);
 
-      return url;
+      // Add to confirmed list
+      setState(() {
+        _confirmedCerts.add({
+          'name':     _pendingCert!['name'],
+          'url':      url,
+          'fileName': fileName,
+        });
+        _pendingCert = null;
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${_pendingCert?['name'] ?? 'Certificate'} saved! ✓'),
+          backgroundColor: AppColors.green,
+        ),
+      );
+
     } catch (e) {
-      debugPrint('Avatar upload error: $e');
-      return _avatarUrl;
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Upload failed. Please try again.'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isUploading = false);
     }
   }
 
-  // ── Save profile ───────────────────────────────────────────────
-  Future<void> _saveProfile() async {
-    if (_fullNameController.text.trim().isEmpty) {
+  // ── Cancel pending cert ────────────────────────────────────────
+  void _cancelPendingCert() {
+    setState(() => _pendingCert = null);
+  }
+
+  // ── Delete confirmed cert from storage ─────────────────────────
+  Future<void> _deleteCert(int index) async {
+    final cert = _confirmedCerts[index];
+    try {
+      // Delete from storage
+      await SupabaseService.client.storage
+          .from('certificates')
+          .remove([cert['fileName'] as String]);
+
+      setState(() => _confirmedCerts.removeAt(index));
+
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please enter your full name'),
+          content: Text('Certificate deleted'),
+          backgroundColor: AppColors.indigo,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not delete. Please try again.'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+    }
+  }
+
+  // ── Complete profile ───────────────────────────────────────────
+  Future<void> _complete() async {
+    if (_teachingSkills.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please add at least 1 skill you can teach'),
           backgroundColor: AppColors.red,
         ),
       );
       return;
     }
 
-    setState(() => _isSaving = true);
+    setState(() => _isLoading = true);
 
     try {
       final userId = SupabaseService.currentUserId!;
 
-      // Upload avatar if selected
-      final avatarUrl = await _uploadAvatar(userId);
+      await SupabaseService.client
+          .from('skills')
+          .delete()
+          .eq('user_id', userId);
 
-      // Save to users table
-      await SupabaseService.client.from('users').update({
-        'full_name':    _fullNameController.text.trim(),
-        'institution':  _institutionController.text.trim(),
-        'occupation':   _occupationController.text.trim(),
-        'phone':        _phoneController.text.trim(),
-        'linkedin_url': _linkedinController.text.trim(),
-        'passing_year': _selectedYear != null
-            ? int.tryParse(_selectedYear!)
-            : null,
-        'avatar_url':   avatarUrl,
-      }).eq('id', userId);
+      for (final skill in _teachingSkills) {
+        await SupabaseService.client.from('skills').insert({
+          'user_id':     userId,
+          'name':        skill,
+          'category':    SkillModel.detectCategory(skill),
+          'is_teaching': true,
+        });
+      }
+
+      for (final skill in _learningSkills) {
+        await SupabaseService.client.from('skills').insert({
+          'user_id':     userId,
+          'name':        skill,
+          'category':    SkillModel.detectCategory(skill),
+          'is_teaching': false,
+        });
+      }
 
       if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Profile saved! ✓'),
-          backgroundColor: AppColors.green,
-        ),
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        '/home',
+        (route) => false,
       );
-
-      Navigator.pop(context);
 
     } catch (e) {
       if (!mounted) return;
@@ -182,8 +286,16 @@ class _ProfileSetupStep2ScreenState extends State<ProfileSetupStep2Screen> {
         ),
       );
     } finally {
-      if (mounted) setState(() => _isSaving = false);
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  double get _progress {
+    double p = 0;
+    if (_teachingSkills.isNotEmpty) p += 0.45;
+    if (_learningSkills.isNotEmpty) p += 0.45;
+    if (_confirmedCerts.isNotEmpty) p += 0.1;
+    return p.clamp(0.0, 1.0);
   }
 
   @override
@@ -201,178 +313,449 @@ class _ProfileSetupStep2ScreenState extends State<ProfileSetupStep2Screen> {
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
-          'Complete Profile',
+          'Skills & Interests',
           style: AppTextStyles.heading2,
         ),
-      ),
-      body: _isLoading
-          ? const LoadingSpinner()
-          : LoadingOverlay(
-              isLoading: _isSaving,
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(AppSpacing.xl),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(32),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xl,
+              vertical: AppSpacing.sm,
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
+                    const Text(
+                      'STEP 2 OF 2',
+                      style: TextStyle(
+                        fontFamily: 'Nunito',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                        color: AppColors.textMuted,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    Text(
+                      '${(_progress * 100).toInt()}%',
+                      style: const TextStyle(
+                        fontFamily: 'Nunito',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: _progress,
+                    backgroundColor: AppColors.elevated,
+                    valueColor: const AlwaysStoppedAnimation<Color>(
+                      AppColors.indigo,
+                    ),
+                    minHeight: 6,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      body: LoadingOverlay(
+        isLoading: _isLoading,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.xl),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
 
-                    // ── Progress ──────────────────────────
-                    Row(
+              // ── Skills I Have ────────────────────────
+              _buildSectionHeader(icon: '⭐', title: 'Skills I Have'),
+              const SizedBox(height: AppSpacing.sm),
+              if (_teachingSkills.isNotEmpty)
+                Wrap(
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.sm,
+                  children: _teachingSkills.map((skill) {
+                    return _buildSkillChip(
+                      skill,
+                      AppColors.indigo,
+                      () => setState(
+                        () => _teachingSkills.remove(skill),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              const SizedBox(height: AppSpacing.sm),
+              _buildSkillInput(
+                controller: _teachSkillController,
+                hint: 'Add a skill...',
+                color: AppColors.indigo,
+                onAdd: _addTeachSkill,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'Add at least 1 skill you\'re proficient in.',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textMuted,
+                ),
+              ),
+
+              const SizedBox(height: AppSpacing.xl),
+
+              // ── I Want to Learn ──────────────────────
+              _buildSectionHeader(icon: '🎓', title: 'I Want to Learn'),
+              const SizedBox(height: AppSpacing.sm),
+              if (_learningSkills.isNotEmpty)
+                Wrap(
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.sm,
+                  children: _learningSkills.map((skill) {
+                    return _buildSkillChip(
+                      skill,
+                      AppColors.coral,
+                      () => setState(
+                        () => _learningSkills.remove(skill),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              const SizedBox(height: AppSpacing.sm),
+              _buildSkillInput(
+                controller: _learnSkillController,
+                hint: 'Add a skill...',
+                color: AppColors.coral,
+                onAdd: _addLearnSkill,
+              ),
+
+              const SizedBox(height: AppSpacing.xl),
+
+              // ── Upload Certificates ──────────────────
+              _buildSectionHeader(
+                icon: '🏅',
+                title: 'Upload Certificates',
+              ),
+              const SizedBox(height: AppSpacing.sm),
+
+              // Upload area — only show if no pending cert
+              if (_pendingCert == null)
+                GestureDetector(
+                  onTap: _isUploading ? null : _pickCertificate,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(AppSpacing.xl),
+                    decoration: BoxDecoration(
+                      color: AppColors.cardSurface,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.elevated),
+                    ),
+                    child: Column(
                       children: [
-                        Expanded(
-                          child: Container(
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: AppColors.indigo,
-                              borderRadius: BorderRadius.circular(2),
-                            ),
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: AppColors.indigo
+                                .withValues(alpha: 0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.cloud_upload_outlined,
+                            color: AppColors.indigo,
+                            size: 24,
                           ),
                         ),
-                        const SizedBox(width: AppSpacing.sm),
-                        Expanded(
-                          child: Container(
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: AppColors.indigo,
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
+                        const SizedBox(height: AppSpacing.sm),
+                        const Text(
+                          'Drag or tap to upload',
+                          style: AppTextStyles.bodyBold,
+                        ),
+                        const Text(
+                          'JPG, PNG or PDF (Max 5MB)',
+                          style: AppTextStyles.caption,
                         ),
                       ],
                     ),
+                  ),
+                ),
 
-                    const SizedBox(height: AppSpacing.sm),
-
-                    const Text('Step 2 of 2', style: AppTextStyles.label),
-
-                    const SizedBox(height: AppSpacing.xl),
-
-                    const Text(
-                      'Tell us about yourself',
-                      style: AppTextStyles.heading1,
+              // ── Pending cert preview ─────────────────
+              if (_pendingCert != null) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  decoration: BoxDecoration(
+                    color: AppColors.cardSurface,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: AppColors.indigo.withValues(alpha: 0.4),
+                      width: 1.5,
                     ),
+                  ),
+                  child: Column(
+                    children: [
 
-                    const SizedBox(height: AppSpacing.sm),
+                      // File info
+                      Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: AppColors.indigo
+                                  .withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Icon(
+                              Icons.insert_drive_file_outlined,
+                              color: AppColors.indigo,
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: AppSpacing.md),
+                          Expanded(
+                            child: Text(
+                              _pendingCert!['name'] as String,
+                              style: AppTextStyles.bodyBold,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
 
-                    const Text(
-                      'This helps others know who you are',
-                      style: AppTextStyles.body,
+                      const SizedBox(height: AppSpacing.md),
+
+                      const Text(
+                        'Confirm to upload this certificate?',
+                        style: AppTextStyles.body,
+                        textAlign: TextAlign.center,
+                      ),
+
+                      const SizedBox(height: AppSpacing.md),
+
+                      // Confirm / Cancel buttons
+                      Row(
+                        children: [
+
+                          // Cancel button
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _cancelPendingCert,
+                              icon: const Icon(
+                                Icons.close_rounded,
+                                size: 16,
+                              ),
+                              label: const Text(
+                                'Cancel',
+                                style: TextStyle(
+                                  fontFamily: 'Nunito',
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppColors.red,
+                                side: const BorderSide(
+                                  color: AppColors.red,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius:
+                                      BorderRadius.circular(100),
+                                ),
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(width: AppSpacing.md),
+
+                          // Confirm button
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: _isUploading
+                                  ? null
+                                  : _confirmCertificate,
+                              icon: _isUploading
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : const Icon(
+                                      Icons.check_rounded,
+                                      size: 16,
+                                    ),
+                              label: Text(
+                                _isUploading
+                                    ? 'Uploading...'
+                                    : 'Confirm',
+                                style: const TextStyle(
+                                  fontFamily: 'Nunito',
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.green,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius:
+                                      BorderRadius.circular(100),
+                                ),
+                              ),
+                            ),
+                          ),
+
+                        ],
+                      ),
+
+                    ],
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: AppSpacing.md),
+
+              // ── Confirmed certificates ───────────────
+              if (_confirmedCerts.isNotEmpty) ...[
+                Wrap(
+                  spacing: AppSpacing.md,
+                  runSpacing: AppSpacing.md,
+                  children: _confirmedCerts
+                      .asMap()
+                      .entries
+                      .map((entry) => _buildCertCard(
+                            entry.key,
+                            entry.value['name'] as String,
+                          ))
+                      .toList(),
+                ),
+                const SizedBox(height: AppSpacing.md),
+              ],
+
+              const SizedBox(height: AppSpacing.xl),
+
+              // ── Complete button ──────────────────────
+              CoralButton(
+                label: 'Complete Profile',
+                onTap: _isLoading ? null : _complete,
+                isLoading: _isLoading,
+              ),
+
+              const SizedBox(height: AppSpacing.md),
+
+              Center(
+                child: TextButton(
+                  onPressed: () {
+                    Navigator.pushNamedAndRemoveUntil(
+                      context,
+                      '/home',
+                      (route) => false,
+                    );
+                  },
+                  child: const Text(
+                    'Skip for now',
+                    style: TextStyle(
+                      color: AppColors.textMuted,
+                      fontFamily: 'Nunito',
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
                     ),
-
-                    const SizedBox(height: AppSpacing.xl),
-
-                    // ── Avatar ────────────────────────────
-                    Center(child: _buildAvatarPicker()),
-
-                    const SizedBox(height: AppSpacing.xl),
-
-                    // ── Full name ─────────────────────────
-                    _buildField(
-                      controller: _fullNameController,
-                      label: 'Full Name',
-                      icon: Icons.person_outline_rounded,
-                    ),
-
-                    const SizedBox(height: AppSpacing.md),
-
-                    // ── Occupation ────────────────────────
-                    _buildField(
-                      controller: _occupationController,
-                      label: 'Occupation (e.g. Student, Developer)',
-                      icon: Icons.work_outline_rounded,
-                    ),
-
-                    const SizedBox(height: AppSpacing.md),
-
-                    // ── Institution ───────────────────────
-                    _buildField(
-                      controller: _institutionController,
-                      label: 'Institution / University',
-                      icon: Icons.school_outlined,
-                    ),
-
-                    const SizedBox(height: AppSpacing.md),
-
-                    // ── Passing year ──────────────────────
-                    _buildYearDropdown(),
-
-                    const SizedBox(height: AppSpacing.md),
-
-                    // ── Phone ─────────────────────────────
-                    _buildField(
-                      controller: _phoneController,
-                      label: 'Phone Number (optional)',
-                      icon: Icons.phone_outlined,
-                      keyboardType: TextInputType.phone,
-                    ),
-
-                    const SizedBox(height: AppSpacing.md),
-
-                    // ── LinkedIn ──────────────────────────
-                    _buildField(
-                      controller: _linkedinController,
-                      label: 'LinkedIn URL (optional)',
-                      icon: Icons.link_rounded,
-                      keyboardType: TextInputType.url,
-                    ),
-
-                    const SizedBox(height: AppSpacing.xxl),
-
-                    // ── Save button ───────────────────────
-                    CoralButton(
-                      label: 'Save Profile',
-                      onTap: _isSaving ? null : _saveProfile,
-                      isLoading: _isSaving,
-                    ),
-
-                    const SizedBox(height: AppSpacing.lg),
-
-                  ],
+                  ),
                 ),
               ),
-            ),
+
+              const SizedBox(height: AppSpacing.lg),
+
+            ],
+          ),
+        ),
+      ),
     );
   }
 
-  // ── Avatar picker ──────────────────────────────────────────────
-  Widget _buildAvatarPicker() {
-    return GestureDetector(
-      onTap: _pickAvatar,
-      child: Stack(
+  Widget _buildSectionHeader({
+    required String icon,
+    required String title,
+  }) {
+    return Row(
+      children: [
+        Text(icon, style: const TextStyle(fontSize: 18)),
+        const SizedBox(width: AppSpacing.sm),
+        Text(
+          title,
+          style: const TextStyle(
+            fontFamily: 'Nunito',
+            fontWeight: FontWeight.w700,
+            fontSize: 16,
+            color: AppColors.textPrimary,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSkillInput({
+    required TextEditingController controller,
+    required String hint,
+    required Color color,
+    required VoidCallback onAdd,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.cardSurface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.elevated),
+      ),
+      child: Row(
         children: [
-          _selectedAvatar != null
-              ? Container(
-                  width: 90,
-                  height: 90,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: AppColors.indigoCoralGradient,),
-                  padding: const EdgeInsets.all(2.5),
-                  child: ClipOval(
-                    child: Image.file(
-                      _selectedAvatar!,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                )
-              : GradientAvatar(
-                  imageUrl: _avatarUrl,
-                  name: _fullNameController.text,
-                  size: 90,
+          Expanded(
+            child: TextField(
+              controller: controller,
+              style: AppTextStyles.body.copyWith(
+                color: AppColors.textPrimary,
+              ),
+              onSubmitted: (_) => onAdd(),
+              decoration: InputDecoration(
+                hintText: hint,
+                hintStyle: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontFamily: 'Nunito',
+                  fontSize: 14,
                 ),
-          Positioned(
-            bottom: 0,
-            right: 0,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.md,
+                  vertical: AppSpacing.md,
+                ),
+              ),
+            ),
+          ),
+          GestureDetector(
+            onTap: onAdd,
             child: Container(
-              width: 28,
-              height: 28,
-              decoration: const BoxDecoration(
-                color: AppColors.indigo,
-                shape: BoxShape.circle,
+              margin: const EdgeInsets.all(AppSpacing.xs),
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(8),
               ),
               child: const Icon(
-                Icons.camera_alt_rounded,
-                size: 14,
+                Icons.add_rounded,
                 color: Colors.white,
+                size: 20,
               ),
             ),
           ),
@@ -381,89 +764,136 @@ class _ProfileSetupStep2ScreenState extends State<ProfileSetupStep2Screen> {
     );
   }
 
-  // ── Year dropdown ──────────────────────────────────────────────
-  Widget _buildYearDropdown() {
-    return DropdownButtonFormField<String>(
-      initialValue: _selectedYear,
-      dropdownColor: AppColors.cardSurface,
-      style: AppTextStyles.bodyBold,
-      decoration: InputDecoration(
-        labelText: 'Passing Year',
-        labelStyle: const TextStyle(
-          color: AppColors.textMuted,
-          fontFamily: 'Nunito',
-        ),
-        prefixIcon: const Icon(
-          Icons.calendar_today_outlined,
-          color: AppColors.textMuted,
-          size: 20,
-        ),
-        filled: true,
-        fillColor: AppColors.cardSurface,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(
-            color: AppColors.indigo,
-            width: 1.5,
+  Widget _buildSkillChip(
+    String skill,
+    Color color,
+    VoidCallback onRemove,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.xs + 2,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(100),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            skill,
+            style: TextStyle(
+              fontFamily: 'Nunito',
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+              color: color,
+            ),
           ),
-        ),
+          const SizedBox(width: 6),
+          GestureDetector(
+            onTap: onRemove,
+            child: Icon(
+              Icons.close_rounded,
+              size: 14,
+              color: color,
+            ),
+          ),
+        ],
       ),
-      hint: const Text(
-        'Select year',
-        style: TextStyle(
-          color: AppColors.textMuted,
-          fontFamily: 'Nunito',
-        ),
-      ),
-      items: _passingYears.map((year) {
-        return DropdownMenuItem(
-          value: year,
-          child: Text(year),
-        );
-      }).toList(),
-      onChanged: (value) => setState(() => _selectedYear = value),
     );
   }
 
-  // ── Text field builder ─────────────────────────────────────────
-  Widget _buildField({
-    required TextEditingController controller,
-    required String label,
-    required IconData icon,
-    TextInputType? keyboardType,
-  }) {
-    return TextField(
-      controller: controller,
-      keyboardType: keyboardType,
-      style: AppTextStyles.bodyBold,
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: const TextStyle(
-          color: AppColors.textMuted,
-          fontFamily: 'Nunito',
-        ),
-        prefixIcon: Icon(
-          icon,
-          color: AppColors.textMuted,
-          size: 20,
-        ),
-        filled: true,
-        fillColor: AppColors.cardSurface,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(
-            color: AppColors.indigo,
-            width: 1.5,
+  // ── Confirmed cert card with delete button ─────────────────────
+  Widget _buildCertCard(int index, String fileName) {
+    return Container(
+      width: 120,
+      height: 100,
+      decoration: BoxDecoration(
+        color: AppColors.cardSurface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.elevated),
+      ),
+      child: Stack(
+        children: [
+
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.indigo.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.workspace_premium_rounded,
+                    color: AppColors.indigo,
+                    size: 18,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.xs,
+                  ),
+                  child: Text(
+                    fileName,
+                    style: AppTextStyles.caption,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
+
+          // ── Green check — confirmed ──────────────────
+          Positioned(
+            top: 4,
+            right: 4,
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: const BoxDecoration(
+                color: AppColors.green,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.check_rounded,
+                size: 11,
+                color: Colors.white,
+              ),
+            ),
+          ),
+
+          // ── Red X — delete from database ─────────────
+          Positioned(
+            top: 4,
+            left: 4,
+            child: GestureDetector(
+              onTap: () => _deleteCert(index),
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: const BoxDecoration(
+                  color: AppColors.red,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.close_rounded,
+                  size: 11,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+
+        ],
       ),
     );
   }
