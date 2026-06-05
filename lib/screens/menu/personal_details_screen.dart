@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -81,6 +82,66 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     }
   }
 
+  // ── Show image options — change or remove ──────────────────────
+  void _showImageOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.cardSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: AppSpacing.sm),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.elevated,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            ListTile(
+              leading: const Icon(
+                Icons.photo_library_outlined,
+                color: AppColors.indigo,
+              ),
+              title: const Text('Change Photo', style: AppTextStyles.bodyBold),
+              onTap: () {
+                Navigator.pop(context);
+                _pickAvatar();
+              },
+            ),
+            // Show remove only if there is an image
+            if (_avatarBytes != null || _avatarUrl != null)
+              ListTile(
+                leading: const Icon(
+                  Icons.delete_outline_rounded,
+                  color: AppColors.red,
+                ),
+                title: const Text(
+                  'Remove Photo',
+                  style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    color: AppColors.red,
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  _removeAvatar();
+                },
+              ),
+            const SizedBox(height: AppSpacing.md),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── Pick avatar ────────────────────────────────────────────────
   Future<void> _pickAvatar() async {
     try {
@@ -101,6 +162,30 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
           backgroundColor: AppColors.red,
         ),
       );
+    }
+  }
+
+  // ── Remove avatar — clears locally and from database ──────────
+  Future<void> _removeAvatar() async {
+    setState(() {
+      _avatarBytes = null;
+      _avatarUrl   = null;
+    });
+    try {
+      final userId = SupabaseService.currentUserId!;
+      await SupabaseService.client
+          .from('users')
+          .update({'avatar_url': null})
+          .eq('id', userId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Profile photo removed'),
+          backgroundColor: AppColors.indigo,
+        ),
+      );
+    } catch (e) {
+      debugPrint('Remove avatar error: $e');
     }
   }
 
@@ -161,6 +246,35 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     }
   }
 
+  // ── Delete skill — removes from database immediately ──────────
+  Future<void> _deleteSkill(SkillModel skill) async {
+    // Optimistic update — remove from UI immediately
+    setState(() => _teachingSkills.remove(skill));
+    try {
+      await SupabaseService.client
+          .from('skills')
+          .delete()
+          .eq('id', skill.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${skill.name} removed'),
+          backgroundColor: AppColors.indigo,
+        ),
+      );
+    } catch (e) {
+      // Revert on error
+      setState(() => _teachingSkills.add(skill));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not delete skill. Please try again.'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+    }
+  }
+
   // ── Save changes ───────────────────────────────────────────────
   Future<void> _saveChanges() async {
     setState(() => _isSaving = true);
@@ -206,10 +320,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
           ),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text(
-          'Personal Details',
-          style: AppTextStyles.heading2,
-        ),
+        title: const Text('Personal Details', style: AppTextStyles.heading2),
       ),
       body: _isLoading
           ? const LoadingSpinner()
@@ -281,41 +392,33 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
     );
   }
 
-  // ── Avatar section ─────────────────────────────────────────────
+  // ── Avatar section — tap opens options sheet ───────────────────
   Widget _buildAvatarSection() {
     return GestureDetector(
-      onTap: _pickAvatar,
+      onTap: _showImageOptions,
       child: Stack(
         children: [
+
           // Avatar display
           _avatarBytes != null
               ? Container(
-                  width: 90,
-                  height: 90,
+                  width: 90, height: 90,
                   decoration: const BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: AppColors.indigoCoralGradient,
                   ),
                   padding: const EdgeInsets.all(2.5),
                   child: ClipOval(
-                    child: Image.memory(
-                      _avatarBytes!,
-                      fit: BoxFit.cover,
-                    ),
+                    child: Image.memory(_avatarBytes!, fit: BoxFit.cover),
                   ),
                 )
-              : GradientAvatar(
-                  imageUrl: _avatarUrl,
-                  size: 90,
-                ),
+              : GradientAvatar(imageUrl: _avatarUrl, size: 90),
 
           // Camera icon
           Positioned(
-            bottom: 0,
-            right: 0,
+            bottom: 0, right: 0,
             child: Container(
-              width: 28,
-              height: 28,
+              width: 28, height: 28,
               decoration: const BoxDecoration(
                 color: AppColors.indigo,
                 shape: BoxShape.circle,
@@ -327,6 +430,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
               ),
             ),
           ),
+
         ],
       ),
     );
@@ -406,8 +510,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
               GestureDetector(
                 onTap: _addSkill,
                 child: Container(
-                  width: 48,
-                  height: 48,
+                  width: 48, height: 48,
                   decoration: BoxDecoration(
                     color: AppColors.indigo,
                     borderRadius: BorderRadius.circular(12),
@@ -435,56 +538,74 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
             spacing: AppSpacing.sm,
             runSpacing: AppSpacing.sm,
             children: _teachingSkills.map((skill) {
-              return GestureDetector(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => SkillVerificationScreen(
-                        skillId:   skill.id,
-                        skillName: skill.name,
-                      ),
-                    ),
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.xs + 2,
+              return Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.md,
+                  vertical: AppSpacing.xs + 2,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.indigo.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(
+                    color: AppColors.indigo.withValues(alpha: 0.4),
                   ),
-                  decoration: BoxDecoration(
-                    color: AppColors.indigo.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(100),
-                    border: Border.all(
-                      color: AppColors.indigo.withValues(alpha: 0.4),
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        skill.name,
-                        style: const TextStyle(
-                          fontFamily: 'Nunito',
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                          color: AppColors.indigo,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+
+                    // Tap skill name to verify
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SkillVerificationScreen(
+                            skillId:   skill.id,
+                            skillName: skill.name,
+                          ),
                         ),
                       ),
-                      if (skill.isVerified) ...[
-                        const SizedBox(width: 4),
-                        const Icon(
-                          Icons.verified,
-                          size: 12,
-                          color: AppColors.indigo,
-                        ),
-                      ],
-                    ],
-                  ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            skill.name,
+                            style: const TextStyle(
+                              fontFamily: 'Nunito',
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                              color: AppColors.indigo,
+                            ),
+                          ),
+                          if (skill.isVerified) ...[
+                            const SizedBox(width: 4),
+                            const Icon(
+                              Icons.verified,
+                              size: 12,
+                              color: AppColors.indigo,
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+
+                    // X button to delete skill
+                    const SizedBox(width: 6),
+                    GestureDetector(
+                      onTap: () => _deleteSkill(skill),
+                      child: const Icon(
+                        Icons.close_rounded,
+                        size: 14,
+                        color: AppColors.indigo,
+                      ),
+                    ),
+
+                  ],
                 ),
               );
             }).toList(),
           ),
+
       ],
     );
   }
@@ -492,14 +613,10 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
   // ── Availability tile ──────────────────────────────────────────
   Widget _buildAvailabilityTile() {
     return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => const AvailabilityScreen(),
-          ),
-        );
-      },
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const AvailabilityScreen()),
+      ),
       child: Container(
         padding: const EdgeInsets.all(AppSpacing.md),
         decoration: BoxDecoration(
@@ -509,11 +626,7 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
         ),
         child: const Row(
           children: [
-            Icon(
-              Icons.access_time_rounded,
-              color: AppColors.indigo,
-              size: 22,
-            ),
+            Icon(Icons.access_time_rounded, color: AppColors.indigo, size: 22),
             SizedBox(width: AppSpacing.md),
             Expanded(
               child: Column(
@@ -527,11 +640,8 @@ class _PersonalDetailsScreenState extends State<PersonalDetailsScreen> {
                 ],
               ),
             ),
-            Icon(
-              Icons.arrow_forward_ios_rounded,
-              color: AppColors.textMuted,
-              size: 14,
-            ),
+            Icon(Icons.arrow_forward_ios_rounded,
+                color: AppColors.textMuted, size: 14),
           ],
         ),
       ),

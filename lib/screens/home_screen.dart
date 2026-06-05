@@ -15,6 +15,7 @@ import 'swap/swap_screen.dart';
 import 'swap/swap_proposal_sheet.dart';
 import 'notification_screen.dart';
 import 'messages/messages_screen.dart';
+import 'messages/chat_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -24,11 +25,13 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _currentIndex              = 0;
-  bool _isLoading                = true;
-  List<UserModel> _matches       = [];
+  int _currentIndex                     = 0;
+  bool _isLoading                       = true;
+  List<UserModel> _matches              = [];
+  final Set<String> _matchedUserIds     = {};
+  final Map<String, String> _swapIds    = {}; // userId -> swapId for chat
   final List<SkillModel> _myTeachingSkills = [];
-  bool _isProfileComplete        = false;
+  bool _isProfileComplete               = false;
 
   @override
   void initState() {
@@ -42,6 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await Future.wait([
         _loadCurrentUser(),
         _loadMatches(),
+        _loadMatchedUsers(),
       ]);
     } catch (e) {
       debugPrint('Home load error: $e');
@@ -81,6 +85,34 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ── Load accepted swaps to know who is already matched ────────
+  Future<void> _loadMatchedUsers() async {
+    try {
+      final userId = SupabaseService.currentUserId;
+      if (userId == null) return;
+
+      final res = await SupabaseService.client
+          .from('swaps')
+          .select('id, sender_id, receiver_id')
+          .eq('status', 'accepted')
+          .or('sender_id.eq.$userId,receiver_id.eq.$userId');
+
+      setState(() {
+        _matchedUserIds.clear();
+        _swapIds.clear();
+        for (final row in res as List) {
+          final otherId = row['sender_id'] == userId
+              ? row['receiver_id'] as String
+              : row['sender_id'] as String;
+          _matchedUserIds.add(otherId);
+          _swapIds[otherId] = row['id'] as String;
+        }
+      });
+    } catch (e) {
+      debugPrint('Load matched users error: $e');
+    }
+  }
+
   Future<void> _loadMatches() async {
     final userId = SupabaseService.currentUserId;
     if (userId == null) return;
@@ -98,7 +130,6 @@ class _HomeScreenState extends State<HomeScreen> {
     List<UserModel> matches = [];
 
     if (learningSkills.isNotEmpty) {
-      // Has learning skills — show matched users first
       final matchedSkillsRes = await SupabaseService.client
           .from('skills')
           .select('user_id')
@@ -122,7 +153,6 @@ class _HomeScreenState extends State<HomeScreen> {
             .toList();
       }
 
-      // Then get remaining users who have teaching skills
       final remainingSkillsRes = await SupabaseService.client
           .from('skills')
           .select('user_id')
@@ -144,15 +174,12 @@ class _HomeScreenState extends State<HomeScreen> {
             .select()
             .inFilter('id', remainingIds);
 
-        final remainingUsers = (remainingUsersRes as List)
+        matches.addAll((remainingUsersRes as List)
             .map((j) => UserModel.fromJson(j))
-            .toList();
-
-        matches.addAll(remainingUsers);
+            .toList());
       }
 
     } else {
-      // No learning skills — show users who have teaching skills
       final usersWithSkillsRes = await SupabaseService.client
           .from('skills')
           .select('user_id')
@@ -179,7 +206,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _matches = matches);
   }
 
-  // ── Show swap proposal sheet directly from home card ──────────
+  // ── Show swap proposal sheet ───────────────────────────────────
   Future<void> _showSwapSheet(UserModel otherUser) async {
     final skillsRes = await SupabaseService.client
         .from('skills')
@@ -226,6 +253,24 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ── Open chat with matched user ────────────────────────────────
+  void _openChat(UserModel user) {
+    final swapId = _swapIds[user.id];
+    if (swapId == null) {
+      setState(() => _currentIndex = 2);
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          swapId:    swapId,
+          otherUser: user,
+        ),
+      ),
+    );
+  }
+
   List<Widget> get _screens => [
     _buildHomeFeed(),
     const SwapScreen(),
@@ -252,10 +297,7 @@ class _HomeScreenState extends State<HomeScreen> {
       elevation: 0,
       leading: Builder(
         builder: (context) => IconButton(
-          icon: const Icon(
-            Icons.menu_rounded,
-            color: AppColors.textPrimary,
-          ),
+          icon: const Icon(Icons.menu_rounded, color: AppColors.textPrimary),
           onPressed: () => Scaffold.of(context).openDrawer(),
         ),
       ),
@@ -263,17 +305,12 @@ class _HomeScreenState extends State<HomeScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 28,
-            height: 28,
+            width: 28, height: 28,
             decoration: BoxDecoration(
               gradient: AppColors.indigoCoralGradient,
               borderRadius: BorderRadius.circular(6),
             ),
-            child: const Icon(
-              Icons.swap_horiz_rounded,
-              size: 16,
-              color: Colors.white,
-            ),
+            child: const Icon(Icons.swap_horiz_rounded, size: 16, color: Colors.white),
           ),
           const SizedBox(width: AppSpacing.sm),
           const Text(
@@ -290,17 +327,11 @@ class _HomeScreenState extends State<HomeScreen> {
       centerTitle: true,
       actions: [
         IconButton(
-          icon: const Icon(
-            Icons.notifications_outlined,
-            color: AppColors.textPrimary,
-          ),
+          icon: const Icon(Icons.notifications_outlined, color: AppColors.textPrimary),
           onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const NotificationScreen(),
-              ),
-            );
+            Navigator.push(context, MaterialPageRoute(
+              builder: (_) => const NotificationScreen(),
+            ));
           },
         ),
       ],
@@ -325,10 +356,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: AppSpacing.lg),
 
-            const Text(
-              'Matched for You 🔥',
-              style: AppTextStyles.heading2,
-            ),
+            const Text('Match for You 🔥', style: AppTextStyles.heading2),
             const SizedBox(height: AppSpacing.xs),
             Text(
               _matches.isEmpty
@@ -346,12 +374,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     subtitle: 'Add skills you want to learn to get matched',
                     buttonLabel: 'Update Skills',
                     onButtonTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const ProfileSetupStep2Screen(),
-                        ),
-                      ).then((_) => _loadData());
+                      Navigator.push(context, MaterialPageRoute(
+                        builder: (_) => const ProfileSetupStep2Screen(),
+                      )).then((_) => _loadData());
                     },
                   )
                 : GridView.builder(
@@ -365,13 +390,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       childAspectRatio: 0.78,
                     ),
                     itemCount: _matches.length,
-                    itemBuilder: (context, index) {
-                      return _buildProfileCard(_matches[index]);
-                    },
+                    itemBuilder: (context, index) =>
+                        _buildProfileCard(_matches[index]),
                   ),
 
             const SizedBox(height: AppSpacing.xl),
-
           ],
         ),
       ),
@@ -380,28 +403,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildCompletionBanner() {
     return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => const ProfileSetupStep2Screen(),
-          ),
-        );
-      },
+      onTap: () => Navigator.push(context, MaterialPageRoute(
+        builder: (_) => const ProfileSetupStep2Screen(),
+      )),
       child: Container(
         margin: const EdgeInsets.only(bottom: AppSpacing.md),
         padding: const EdgeInsets.all(AppSpacing.md),
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              AppColors.indigo.withValues(alpha: 0.2),
-              AppColors.coral.withValues(alpha: 0.2),
-            ],
-          ),
+          gradient: LinearGradient(colors: [
+            AppColors.indigo.withValues(alpha: 0.2),
+            AppColors.coral.withValues(alpha: 0.2),
+          ]),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: AppColors.indigo.withValues(alpha: 0.3),
-          ),
+          border: Border.all(color: AppColors.indigo.withValues(alpha: 0.3)),
         ),
         child: const Row(
           children: [
@@ -418,11 +432,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             ),
-            Icon(
-              Icons.arrow_forward_ios_rounded,
-              color: AppColors.textMuted,
-              size: 14,
-            ),
+            Icon(Icons.arrow_forward_ios_rounded, color: AppColors.textMuted, size: 14),
           ],
         ),
       ),
@@ -431,14 +441,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildSearchBar() {
     return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => const SearchScreen(),
-          ),
-        );
-      },
+      onTap: () => Navigator.push(context, MaterialPageRoute(
+        builder: (_) => const SearchScreen(),
+      )),
       child: Container(
         padding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.md,
@@ -455,11 +460,7 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(width: AppSpacing.sm),
             Text(
               'Search skills or people...',
-              style: TextStyle(
-                fontFamily: 'Nunito',
-                fontSize: 14,
-                color: AppColors.textMuted,
-              ),
+              style: TextStyle(fontFamily: 'Nunito', fontSize: 14, color: AppColors.textMuted),
             ),
           ],
         ),
@@ -468,41 +469,30 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ── Profile card ───────────────────────────────────────────────
-  // Tap card body → opens UserProfileScreen
-  // Tap Swap button → opens SwapProposalSheet directly
   Widget _buildProfileCard(UserModel user) {
+    final isMatched = _matchedUserIds.contains(user.id);
+
     return GlassCard(
       padding: const EdgeInsets.all(AppSpacing.sm),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
 
-          // ── Tappable area — opens profile ──────────────
+          // Tappable area — opens profile
           GestureDetector(
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => UserProfileScreen(
-                    userId: user.id,
-                    myTeachingSkills: _myTeachingSkills,
-                  ),
-                ),
-              );
-            },
+            onTap: () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => UserProfileScreen(
+                userId: user.id,
+                myTeachingSkills: _myTeachingSkills,
+              ),
+            )),
             child: Column(
               children: [
 
-                // Avatar
-                GradientAvatar(
-                  imageUrl: user.avatarUrl,
-                  name: user.displayName,
-                  size: 52,
-                ),
+                GradientAvatar(imageUrl: user.avatarUrl, name: user.displayName, size: 52),
 
                 const SizedBox(height: AppSpacing.xs),
 
-                // Name
                 Text(
                   user.displayName,
                   style: AppTextStyles.bodyBold.copyWith(fontSize: 12),
@@ -511,7 +501,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   overflow: TextOverflow.ellipsis,
                 ),
 
-                // Occupation
                 if (user.occupation != null)
                   Text(
                     user.occupation!,
@@ -521,16 +510,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     overflow: TextOverflow.ellipsis,
                   ),
 
-                // Institution
                 if (user.institution != null)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(
-                        Icons.school_outlined,
-                        size: 10,
-                        color: AppColors.textMuted,
-                      ),
+                      const Icon(Icons.school_outlined, size: 10, color: AppColors.textMuted),
                       const SizedBox(width: 2),
                       Expanded(
                         child: Text(
@@ -545,15 +529,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 const SizedBox(height: AppSpacing.xs),
 
-                // Rating
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(
-                      Icons.star_rounded,
-                      size: 12,
-                      color: AppColors.gold,
-                    ),
+                    const Icon(Icons.star_rounded, size: 12, color: AppColors.gold),
                     const SizedBox(width: 2),
                     Text(
                       user.avgRating.toStringAsFixed(1),
@@ -568,30 +547,56 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const SizedBox(height: AppSpacing.xs),
 
-          // ── Swap button — opens proposal sheet directly ─
+          // ── Message button (matched) or Swap button (not matched)
           SizedBox(
             width: double.infinity,
             height: 28,
-            child: ElevatedButton(
-              onPressed: () => _showSwapSheet(user),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.coral,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                padding: EdgeInsets.zero,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(100),
-                ),
-              ),
-              child: const Text(
-                'Swap →',
-                style: TextStyle(
-                  fontFamily: 'Nunito',
-                  fontWeight: FontWeight.w700,
-                  fontSize: 11,
-                ),
-              ),
-            ),
+            child: isMatched
+
+                // Already matched — show Message button
+                ? ElevatedButton.icon(
+                    onPressed: () => _openChat(user),
+                    icon: const Icon(Icons.chat_bubble_rounded, size: 11),
+                    label: const Text(
+                      'Message',
+                      style: TextStyle(
+                        fontFamily: 'Nunito',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.indigo,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(100),
+                      ),
+                    ),
+                  )
+
+                // Not matched — show Swap button
+                : ElevatedButton(
+                    onPressed: () => _showSwapSheet(user),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.coral,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(100),
+                      ),
+                    ),
+                    child: const Text(
+                      'Swap →',
+                      style: TextStyle(
+                        fontFamily: 'Nunito',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
           ),
 
         ],
@@ -608,14 +613,9 @@ class _HomeScreenState extends State<HomeScreen> {
       unselectedItemColor: AppColors.textMuted,
       type: BottomNavigationBarType.fixed,
       selectedLabelStyle: const TextStyle(
-        fontFamily: 'Nunito',
-        fontWeight: FontWeight.w700,
-        fontSize: 11,
+        fontFamily: 'Nunito', fontWeight: FontWeight.w700, fontSize: 11,
       ),
-      unselectedLabelStyle: const TextStyle(
-        fontFamily: 'Nunito',
-        fontSize: 11,
-      ),
+      unselectedLabelStyle: const TextStyle(fontFamily: 'Nunito', fontSize: 11),
       items: const [
         BottomNavigationBarItem(
           icon: Icon(Icons.home_outlined),
@@ -642,7 +642,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// ── Temporary placeholder screens ─────────────────────────────────
 class _PlaceholderScreen extends StatelessWidget {
   final String label;
   const _PlaceholderScreen({required this.label});
@@ -655,9 +654,7 @@ class _PlaceholderScreen extends StatelessWidget {
         child: Text(
           '$label — Coming Soon',
           style: const TextStyle(
-            color: AppColors.textMuted,
-            fontFamily: 'Nunito',
-            fontSize: 16,
+            color: AppColors.textMuted, fontFamily: 'Nunito', fontSize: 16,
           ),
         ),
       ),

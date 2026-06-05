@@ -9,6 +9,7 @@ import '../../widgets/loading_spinner.dart';
 import '../../widgets/skill_chip.dart';
 import '../../widgets/glass_card.dart';
 import '../swap/swap_proposal_sheet.dart';
+import '../messages/chat_screen.dart';
 
 class UserProfileScreen extends StatefulWidget {
   final String userId;
@@ -241,14 +242,38 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     );
   }
 
-  void _goToChat() {
+  Future<void> _goToChat() async {
+  try {
+    final currentUserId = SupabaseService.currentUserId!;
+    final res = await SupabaseService.client
+        .from('swaps')
+        .select('id')
+        .eq('status', 'accepted')
+        .or('and(sender_id.eq.$currentUserId,receiver_id.eq.${widget.userId}),and(sender_id.eq.${widget.userId},receiver_id.eq.$currentUserId)')
+        .single();
+
+    final swapId = res['id'] as String;
+
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          swapId:    swapId,
+          otherUser: _user!,
+        ),
+      ),
+    );
+  } catch (e) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Go to Messages tab to chat'),
-        backgroundColor: AppColors.indigo,
+        content: Text('Could not open chat. Please try again.'),
+        backgroundColor: AppColors.red,
       ),
     );
   }
+}
 
   @override
   Widget build(BuildContext context) {

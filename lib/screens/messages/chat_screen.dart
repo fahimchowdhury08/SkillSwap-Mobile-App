@@ -1,9 +1,15 @@
-
 import 'package:flutter/material.dart';
-import 'package:timeago/timeago.dart' as timeago;
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:photo_view/photo_view.dart';
+import 'package:dio/dio.dart';
+import 'package:open_file/open_file.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'dart:typed_data';
 import '../../theme.dart';
@@ -28,12 +34,12 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  // ── Controllers ───────────────────────────────────────────────
   final _messageController = TextEditingController();
   final _scrollController  = ScrollController();
 
-  // ── State ──────────────────────────────────────────────────────
   final List<MessageModel> _messages = [];
+  final List<Map<String, dynamic>> _pendingAttachments = [];
+
   bool _isLoading   = true;
   bool _isSending   = false;
   bool _isUploading = false;
@@ -58,7 +64,6 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  // ── Load current user name ─────────────────────────────────────
   Future<void> _loadCurrentUserName() async {
     try {
       final userId = SupabaseService.currentUserId;
@@ -74,7 +79,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ── Load existing messages ─────────────────────────────────────
   Future<void> _loadMessages() async {
     setState(() => _isLoading = true);
     try {
@@ -82,7 +86,7 @@ class _ChatScreenState extends State<ChatScreen> {
           .from('messages')
           .select()
           .eq('swap_id', widget.swapId)
-          .order('created_at');
+          .order('created_at', ascending: true);
 
       setState(() {
         _messages.clear();
@@ -91,7 +95,6 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       });
 
-      // Mark all as read
       await SupabaseService.client
           .from('messages')
           .update({'is_read': true})
@@ -99,7 +102,6 @@ class _ChatScreenState extends State<ChatScreen> {
           .neq('sender_id', SupabaseService.currentUserId!);
 
       _scrollToBottom();
-
     } catch (e) {
       debugPrint('Load messages error: $e');
     } finally {
@@ -107,7 +109,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ── Subscribe to realtime messages ────────────────────────────
   void _subscribeToMessages() {
     _channel = SupabaseService.client
         .channel('messages:${widget.swapId}')
@@ -122,7 +123,6 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           callback: (payload) {
             final msg = MessageModel.fromJson(payload.newRecord);
-            // Only add if not already in list
             final exists = _messages.any((m) => m.id == msg.id);
             if (!exists) {
               setState(() => _messages.add(msg));
@@ -133,7 +133,6 @@ class _ChatScreenState extends State<ChatScreen> {
         .subscribe();
   }
 
-  // ── Scroll to bottom ───────────────────────────────────────────
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -146,26 +145,23 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  // ── Send text message ──────────────────────────────────────────
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
+    if (_pendingAttachments.isNotEmpty) {
+      await _sendPendingAttachments();
+      return;
+    }
     if (text.isEmpty) return;
-
     _messageController.clear();
     setState(() => _isSending = true);
-
     try {
-      final currentUserId = SupabaseService.currentUserId!;
-
       await SupabaseService.client.from('messages').insert({
         'swap_id':      widget.swapId,
-        'sender_id':    currentUserId,
+        'sender_id':    SupabaseService.currentUserId!,
         'content':      text,
         'message_type': 'text',
         'is_read':      false,
       });
-
-      // Send notification
       await SupabaseService.sendNotification(
         userId: widget.otherUser.id,
         type:   'message_received',
@@ -173,7 +169,6 @@ class _ChatScreenState extends State<ChatScreen> {
         body:   text,
         data:   {'swap_id': widget.swapId},
       );
-
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -187,15 +182,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ── Show attachment picker ─────────────────────────────────────
   void _showAttachmentPicker() {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.cardSurface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(20),
-        ),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (_) => SafeArea(
         child: Column(
@@ -211,32 +203,16 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             const SizedBox(height: AppSpacing.md),
             ListTile(
-              leading: const Icon(
-                Icons.image_outlined,
-                color: AppColors.indigo,
-              ),
-              title: const Text(
-                'Send Image',
-                style: AppTextStyles.bodyBold,
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                _pickAndSendImage();
-              },
+              leading: const Icon(Icons.image_outlined, color: AppColors.indigo),
+              title: const Text('Add Images', style: AppTextStyles.bodyBold),
+              subtitle: const Text('Pick one or more images', style: AppTextStyles.caption),
+              onTap: () { Navigator.pop(context); _pickImages(); },
             ),
             ListTile(
-              leading: const Icon(
-                Icons.insert_drive_file_outlined,
-                color: AppColors.coral,
-              ),
-              title: const Text(
-                'Send Document',
-                style: AppTextStyles.bodyBold,
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                _pickAndSendFile();
-              },
+              leading: const Icon(Icons.insert_drive_file_outlined, color: AppColors.coral),
+              title: const Text('Add Documents', style: AppTextStyles.bodyBold),
+              subtitle: const Text('Pick one or more PDF/DOC files', style: AppTextStyles.caption),
+              onTap: () { Navigator.pop(context); _pickFiles(); },
             ),
             const SizedBox(height: AppSpacing.md),
           ],
@@ -245,116 +221,291 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // ── Pick and send image ────────────────────────────────────────
-  Future<void> _pickAndSendImage() async {
+  Future<void> _pickImages() async {
     try {
       final picker = ImagePicker();
-      final picked = await picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 70,
-      );
-      if (picked == null) return;
-
-      setState(() => _isUploading = true);
-
-      final bytes    = await File(picked.path).readAsBytes();
-      final fileName =
-          'chat_${widget.swapId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-
-      await SupabaseService.client.storage
-          .from('chat-media')
-          .uploadBinary(
-            fileName,
-            bytes,
-            fileOptions: const FileOptions(
-              contentType: 'image/jpeg',
-              upsert: true,
-            ),
-          );
-
-      final url = SupabaseService.client.storage
-          .from('chat-media')
-          .getPublicUrl(fileName);
-
-      await SupabaseService.client.from('messages').insert({
-        'swap_id':      widget.swapId,
-        'sender_id':    SupabaseService.currentUserId!,
-        'content':      '📷 Image',
-        'message_type': 'image',
-        'file_url':     url,
-        'is_read':      false,
-      });
-
+      final picked = await picker.pickMultiImage(imageQuality: 70);
+      if (picked.isEmpty) return;
+      for (final img in picked) {
+        final bytes = await img.readAsBytes();
+        setState(() {
+          _pendingAttachments.add({'type': 'image', 'name': img.name, 'bytes': bytes});
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not send image. Please try again.'),
-          backgroundColor: AppColors.red,
-        ),
+        SnackBar(content: Text('Could not pick images: $e'), backgroundColor: AppColors.red),
       );
-    } finally {
-      if (mounted) setState(() => _isUploading = false);
     }
   }
 
-  // ── Pick and send file ─────────────────────────────────────────
-  Future<void> _pickAndSendFile() async {
+  Future<void> _pickFiles() async {
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['pdf', 'doc', 'docx', 'txt'],
+        allowMultiple: true,
       );
       if (result == null || result.files.isEmpty) return;
-
-      final file = result.files.first;
-      setState(() => _isUploading = true);
-
-      late final Uint8List bytes;
-      if (file.bytes != null) {
-        bytes = file.bytes!;
-      } else if (file.path != null) {
-        bytes = await File(file.path!).readAsBytes();
-      } else {
-        return;
+      for (final file in result.files) {
+        late Uint8List bytes;
+        if (file.bytes != null) {
+          bytes = file.bytes!;
+        } else if (file.path != null) {
+          bytes = await File(file.path!).readAsBytes();
+        } else {
+          continue;
+        }
+        setState(() {
+          _pendingAttachments.add({
+            'type': 'file', 'name': file.name,
+            'bytes': bytes, 'ext': file.extension ?? 'pdf',
+          });
+        });
       }
-
-      final fileName =
-          'chat_${widget.swapId}_${DateTime.now().millisecondsSinceEpoch}.${file.extension}';
-
-      await SupabaseService.client.storage
-          .from('chat-media')
-          .uploadBinary(
-            fileName,
-            bytes,
-            fileOptions: const FileOptions(upsert: true),
-          );
-
-      final url = SupabaseService.client.storage
-          .from('chat-media')
-          .getPublicUrl(fileName);
-
-      await SupabaseService.client.from('messages').insert({
-        'swap_id':      widget.swapId,
-        'sender_id':    SupabaseService.currentUserId!,
-        'content':      '📄 ${file.name}',
-        'message_type': 'file',
-        'file_url':     url,
-        'is_read':      false,
-      });
-
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not send file. Please try again.'),
-          backgroundColor: AppColors.red,
-        ),
+        SnackBar(content: Text('Could not pick files: $e'), backgroundColor: AppColors.red),
+      );
+    }
+  }
+
+  void _removePending(int index) => setState(() => _pendingAttachments.removeAt(index));
+
+  Future<void> _sendPendingAttachments() async {
+    if (_pendingAttachments.isEmpty) return;
+    setState(() => _isUploading = true);
+    try {
+      for (final attachment in _pendingAttachments) {
+        final bytes   = attachment['bytes'] as Uint8List;
+        final name    = attachment['name'] as String;
+        final type    = attachment['type'] as String;
+        final isImage = type == 'image';
+        final ext     = isImage ? 'jpg' : (attachment['ext'] as String? ?? 'pdf');
+        final fileName = 'chat_${widget.swapId}_${DateTime.now().millisecondsSinceEpoch}.$ext';
+
+        await SupabaseService.client.storage.from('chat-media').uploadBinary(
+          fileName, bytes,
+          fileOptions: FileOptions(
+            contentType: isImage ? 'image/jpeg' : 'application/octet-stream',
+            upsert: true,
+          ),
+        );
+
+        final url = SupabaseService.client.storage.from('chat-media').getPublicUrl(fileName);
+
+        await SupabaseService.client.from('messages').insert({
+          'swap_id':      widget.swapId,
+          'sender_id':    SupabaseService.currentUserId!,
+          'content':      isImage ? '📷 Image' : name,
+          'message_type': isImage ? 'image' : 'file',
+          'file_url':     url,
+          'is_read':      false,
+        });
+      }
+      setState(() => _pendingAttachments.clear());
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('All files sent ✓'), backgroundColor: AppColors.green),
+      );
+    } catch (e) {
+      debugPrint('Send attachments error: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not send files: $e'), backgroundColor: AppColors.red),
       );
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
   }
+
+  Future<void> _openUrl(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) { debugPrint('Open URL error: $e'); }
+  }
+
+  Future<void> _downloadUrl(String url) async {
+    try {
+      final downloadUrl = url.contains('?') ? '$url&download=1' : '$url?download=1';
+      final uri = Uri.parse(downloadUrl);
+      if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) { debugPrint('Download URL error: $e'); }
+  }
+
+  void _openImageFullScreen(String url) {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => _FullScreenImageViewer(
+        imageUrl: url,
+        onDownload: () => _saveImageToGallery(url),
+      ),
+    ));
+  }
+
+  Future<void> _saveImageToGallery(String url) async {
+    try {
+      PermissionStatus status;
+      if (Platform.isAndroid) {
+        final v = await _getAndroidVersion();
+        status = v >= 33 ? await Permission.photos.request() : await Permission.storage.request();
+      } else {
+        status = await Permission.photos.request();
+      }
+      if (!status.isGranted) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Storage permission denied'), backgroundColor: AppColors.red,
+        ));
+        return;
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Saving image...'), backgroundColor: AppColors.indigo,
+        duration: Duration(seconds: 1),
+      ));
+      final dio = Dio();
+      final res = await dio.get<List<int>>(url, options: Options(responseType: ResponseType.bytes));
+      final dir = await getExternalStorageDirectory();
+      final savePath = '${dir!.path}/SkillSwap_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      await File(savePath).writeAsBytes(res.data!);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Image saved to Downloads ✓'), backgroundColor: AppColors.green,
+      ));
+    } catch (e) {
+      debugPrint('Save image error: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save image: $e'), backgroundColor: AppColors.red),
+      );
+    }
+  }
+
+  Future<void> _openDocumentMobile(String url, String fileName) async {
+    try {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Opening document...'), backgroundColor: AppColors.indigo,
+        duration: Duration(seconds: 1),
+      ));
+      final dio = Dio();
+      final dir = await getTemporaryDirectory();
+      final savePath = '${dir.path}/$fileName';
+      await dio.download(url, savePath);
+      await OpenFile.open(savePath);
+    } catch (e) {
+      debugPrint('Open document error: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open document: $e'), backgroundColor: AppColors.red),
+      );
+    }
+  }
+
+  Future<void> _downloadDocumentMobile(String url, String fileName) async {
+    try {
+      PermissionStatus status;
+      if (Platform.isAndroid) {
+        final v = await _getAndroidVersion();
+        status = v >= 33 ? PermissionStatus.granted : await Permission.storage.request();
+      } else {
+        status = await Permission.storage.request();
+      }
+      if (!status.isGranted) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Storage permission denied'), backgroundColor: AppColors.red,
+        ));
+        return;
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Downloading...'), backgroundColor: AppColors.indigo,
+        duration: Duration(seconds: 1),
+      ));
+      final dio = Dio();
+      final dir = await getExternalStorageDirectory();
+      final path = '${dir!.path}/$fileName';
+      await dio.download(url, path);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$fileName saved to Downloads ✓'), backgroundColor: AppColors.green),
+      );
+    } catch (e) {
+      debugPrint('Download document error: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not download: $e'), backgroundColor: AppColors.red),
+      );
+    }
+  }
+
+  Future<int> _getAndroidVersion() async {
+    try {
+      final sdkInt = await const MethodChannel('skillswap/android_version')
+          .invokeMethod<int>('getSdkInt');
+      return sdkInt ?? 30;
+    } catch (_) { return 30; }
+  }
+
+  // ── WhatsApp-style date header ─────────────────────────────────
+  Widget _buildDateHeader(DateTime date) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+      child: Row(
+        children: [
+          const Expanded(child: Divider(color: AppColors.elevated)),
+          const SizedBox(width: AppSpacing.sm),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.elevated,
+              borderRadius: BorderRadius.circular(100),
+            ),
+            child: Text(
+              _formatDateHeader(date),
+              style: const TextStyle(
+                fontFamily: 'Nunito',
+                fontWeight: FontWeight.w600,
+                fontSize: 11,
+                color: AppColors.textMuted,
+              ),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          const Expanded(child: Divider(color: AppColors.elevated)),
+        ],
+      ),
+    );
+  }
+
+  // ── Format like WhatsApp ───────────────────────────────────────
+  String _formatDateHeader(DateTime date) {
+    final now    = DateTime.now();
+    final today  = DateTime(now.year, now.month, now.day);
+    final msgDay = DateTime(date.year, date.month, date.day);
+    final diff   = today.difference(msgDay).inDays;
+
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    if (diff < 7) {
+      const days = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+      return days[date.weekday - 1];
+    }
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (date.year == now.year) return '${date.day} ${months[date.month - 1]}';
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  // ── Format time like WhatsApp — 20:04 ─────────────────────────
+  String _formatTime(DateTime date) =>
+      '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
@@ -364,126 +515,139 @@ class _ChatScreenState extends State<ChatScreen> {
         backgroundColor: AppColors.background,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_rounded,
-            color: AppColors.textPrimary,
-          ),
+          icon: const Icon(Icons.arrow_back_ios_rounded, color: AppColors.textPrimary),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
           children: [
-            GradientAvatar(
-              imageUrl: widget.otherUser.avatarUrl,
-              name: widget.otherUser.displayName,
-              size: 36,
-            ),
+            GradientAvatar(imageUrl: widget.otherUser.avatarUrl, name: widget.otherUser.displayName, size: 36),
             const SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    widget.otherUser.displayName,
-                    style: AppTextStyles.bodyBold,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const Text(
-                    'Tap to view profile',
-                    style: AppTextStyles.caption,
-                  ),
+                  Text(widget.otherUser.displayName, style: AppTextStyles.bodyBold, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  const Text('Tap to view profile', style: AppTextStyles.caption),
                 ],
               ),
             ),
           ],
         ),
         actions: [
-          // Video call button
           IconButton(
-            icon: const Icon(
-              Icons.videocam_rounded,
-              color: AppColors.indigo,
+            icon: const Icon(Icons.videocam_rounded, color: AppColors.indigo),
+            onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Video call — coming soon'), backgroundColor: AppColors.indigo),
             ),
-            onPressed: () {
-              // TODO: replace when video call is built
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Video call — coming soon'),
-                  backgroundColor: AppColors.indigo,
-                ),
-              );
-            },
           ),
         ],
       ),
       body: Column(
         children: [
-
-          // ── Messages list ──────────────────────────────
-          Expanded(
-            child: _isLoading
-                ? const LoadingSpinner()
-                : _buildMessagesList(),
-          ),
-
-          // ── Upload indicator ───────────────────────────
+          Expanded(child: _isLoading ? const LoadingSpinner() : _buildMessagesList()),
           if (_isUploading)
             Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.md,
-                vertical: AppSpacing.sm,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
               color: AppColors.cardSurface,
-              child: const Row(
-                children: [
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: AppColors.indigo,
-                    ),
-                  ),
-                  SizedBox(width: AppSpacing.sm),
-                  Text(
-                    'Uploading...',
-                    style: AppTextStyles.caption,
-                  ),
-                ],
-              ),
+              child: const Row(children: [
+                SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.indigo)),
+                SizedBox(width: AppSpacing.sm),
+                Text('Uploading files...', style: AppTextStyles.caption),
+              ]),
             ),
-
-          // ── Input bar ─────────────────────────────────
+          if (_pendingAttachments.isNotEmpty) _buildPendingPreview(),
           _buildInputBar(),
-
         ],
       ),
     );
   }
 
-  // ── Messages list ──────────────────────────────────────────────
+  Widget _buildPendingPreview() {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      decoration: const BoxDecoration(
+        color: AppColors.cardSurface,
+        border: Border(top: BorderSide(color: AppColors.elevated)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: AppSpacing.sm, bottom: AppSpacing.xs),
+            child: Text(
+              '${_pendingAttachments.length} file(s) ready to send',
+              style: const TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600, fontSize: 12, color: AppColors.indigo),
+            ),
+          ),
+          SizedBox(
+            height: 80,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _pendingAttachments.length,
+              itemBuilder: (context, index) {
+                final item    = _pendingAttachments[index];
+                final isImage = item['type'] == 'image';
+                final bytes   = item['bytes'] as Uint8List;
+                final name    = item['name'] as String;
+                return Container(
+                  width: 72,
+                  margin: const EdgeInsets.only(right: AppSpacing.sm),
+                  child: Stack(
+                    children: [
+                      Container(
+                        width: 72, height: 72,
+                        decoration: BoxDecoration(
+                          color: AppColors.elevated,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppColors.indigo.withValues(alpha: 0.4)),
+                        ),
+                        child: isImage
+                            ? ClipRRect(borderRadius: BorderRadius.circular(7), child: Image.memory(bytes, fit: BoxFit.cover))
+                            : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                const Icon(Icons.insert_drive_file_outlined, color: AppColors.coral, size: 28),
+                                const SizedBox(height: 2),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                                  child: Text(name, style: const TextStyle(fontFamily: 'Nunito', fontSize: 9, color: AppColors.textMuted),
+                                      maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
+                                ),
+                              ]),
+                      ),
+                      Positioned(
+                        top: 0, right: 0,
+                        child: GestureDetector(
+                          onTap: () => _removePending(index),
+                          child: Container(
+                            width: 20, height: 20,
+                            decoration: const BoxDecoration(color: AppColors.red, shape: BoxShape.circle),
+                            child: const Icon(Icons.close_rounded, size: 12, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Messages list with WhatsApp date headers + time ────────────
   Widget _buildMessagesList() {
     if (_messages.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            GradientAvatar(
-              imageUrl: widget.otherUser.avatarUrl,
-              name: widget.otherUser.displayName,
-              size: 64,
-            ),
+            GradientAvatar(imageUrl: widget.otherUser.avatarUrl, name: widget.otherUser.displayName, size: 64),
             const SizedBox(height: AppSpacing.md),
-            Text(
-              widget.otherUser.displayName,
-              style: AppTextStyles.heading3,
-            ),
+            Text(widget.otherUser.displayName, style: AppTextStyles.heading3),
             const SizedBox(height: AppSpacing.sm),
-            const Text(
-              "You're both connected! Start swapping skills 🤝",
-              style: AppTextStyles.body,
-              textAlign: TextAlign.center,
-            ),
+            const Text("You're both connected! Start swapping skills 🤝",
+                style: AppTextStyles.body, textAlign: TextAlign.center),
           ],
         ),
       );
@@ -494,26 +658,16 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.all(AppSpacing.md),
       itemCount: _messages.length,
       itemBuilder: (context, index) {
-        final message  = _messages[index];
-        final isMine   = message.senderId ==
-            SupabaseService.currentUserId;
-        final showTime = index == 0 ||
-            message.createdAt
-                .difference(_messages[index - 1].createdAt)
-                .inMinutes > 15;
+        final message = _messages[index];
+        final isMine  = message.senderId == SupabaseService.currentUserId;
+
+        // Show date header when the day changes
+        final showDateHeader = index == 0 ||
+            !_isSameDay(_messages[index - 1].createdAt, message.createdAt);
 
         return Column(
           children: [
-            if (showTime)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: AppSpacing.sm,
-                ),
-                child: Text(
-                  timeago.format(message.createdAt),
-                  style: AppTextStyles.caption,
-                ),
-              ),
+            if (showDateHeader) _buildDateHeader(message.createdAt),
             _buildBubble(message, isMine),
           ],
         );
@@ -521,200 +675,286 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // ── Message bubble ─────────────────────────────────────────────
+  // ── Bubble with time shown below ───────────────────────────────
   Widget _buildBubble(MessageModel message, bool isMine) {
     return Align(
-      alignment: isMine
-          ? Alignment.centerRight
-          : Alignment.centerLeft,
-      child: Container(
-        margin: EdgeInsets.only(
-          top: AppSpacing.xs,
-          bottom: AppSpacing.xs,
-          left:  isMine ? 60 : 0,
-          right: isMine ? 0  : 60,
-        ),
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.md,
-          vertical: AppSpacing.sm,
-        ),
-        decoration: BoxDecoration(
-          color: isMine
-              ? AppColors.indigo
-              : AppColors.cardSurface,
-          borderRadius: BorderRadius.only(
-            topLeft:     const Radius.circular(16),
-            topRight:    const Radius.circular(16),
-            bottomLeft:  Radius.circular(isMine ? 16 : 4),
-            bottomRight: Radius.circular(isMine ? 4  : 16),
+      alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Column(
+        crossAxisAlignment: isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          Container(
+            margin: EdgeInsets.only(
+              top: 2, bottom: 2,
+              left: isMine ? 60 : 0,
+              right: isMine ? 0 : 60,
+            ),
+            decoration: BoxDecoration(
+              color: isMine ? AppColors.indigo : AppColors.cardSurface,
+              borderRadius: BorderRadius.only(
+                topLeft:     const Radius.circular(16),
+                topRight:    const Radius.circular(16),
+                bottomLeft:  Radius.circular(isMine ? 16 : 4),
+                bottomRight: Radius.circular(isMine ? 4  : 16),
+              ),
+            ),
+            child: _buildBubbleContent(message, isMine),
           ),
-        ),
-        child: _buildBubbleContent(message),
+          // Time below bubble — WhatsApp style
+          Padding(
+            padding: EdgeInsets.only(
+              left:   isMine ? 0 : 4,
+              right:  isMine ? 4 : 0,
+              bottom: 6,
+            ),
+            child: Text(
+              _formatTime(message.createdAt),
+              style: const TextStyle(
+                fontFamily: 'Nunito',
+                fontSize: 10,
+                color: AppColors.textMuted,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  // ── Bubble content ─────────────────────────────────────────────
-  Widget _buildBubbleContent(MessageModel message) {
+  Widget _buildBubbleContent(MessageModel message, bool isMine) {
     switch (message.messageType) {
+
       case 'image':
+        if (message.fileUrl == null) {
+          return const Padding(
+            padding: EdgeInsets.all(AppSpacing.md),
+            child: Text('📷 Image', style: TextStyle(color: AppColors.textPrimary, fontFamily: 'Nunito', fontSize: 14)),
+          );
+        }
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (message.fileUrl != null)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+            GestureDetector(
+              onTap: () => kIsWeb ? _openUrl(message.fileUrl!) : _openImageFullScreen(message.fileUrl!),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.only(topLeft: Radius.circular(16), topRight: Radius.circular(16)),
                 child: Image.network(
-                  message.fileUrl!,
-                  width: 200,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const Icon(
-                    Icons.broken_image_outlined,
-                    color: AppColors.textMuted,
-                  ),
+                  message.fileUrl!, width: 220, fit: BoxFit.cover,
+                  loadingBuilder: (context, child, progress) {
+                    if (progress == null) return child;
+                    return Container(width: 220, height: 140, color: AppColors.elevated,
+                        child: const Center(child: CircularProgressIndicator(color: AppColors.indigo, strokeWidth: 2)));
+                  },
+                  errorBuilder: (_, __, ___) => Container(width: 220, height: 80, color: AppColors.elevated,
+                      child: const Center(child: Icon(Icons.broken_image_outlined, color: AppColors.textMuted))),
                 ),
               ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(AppSpacing.sm),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  GestureDetector(
+                    onTap: () => kIsWeb ? _openUrl(message.fileUrl!) : _openImageFullScreen(message.fileUrl!),
+                    child: Row(children: [
+                      Icon(Icons.open_in_new_rounded, size: 13, color: isMine ? Colors.white70 : AppColors.indigo),
+                      const SizedBox(width: 3),
+                      Text('Open', style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600, fontSize: 12,
+                          color: isMine ? Colors.white70 : AppColors.indigo)),
+                    ]),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  GestureDetector(
+                    onTap: () => kIsWeb ? _downloadUrl(message.fileUrl!) : _saveImageToGallery(message.fileUrl!),
+                    child: Row(children: [
+                      Icon(Icons.download_rounded, size: 13, color: isMine ? Colors.white70 : AppColors.coral),
+                      const SizedBox(width: 3),
+                      Text('Download', style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600, fontSize: 12,
+                          color: isMine ? Colors.white70 : AppColors.coral)),
+                    ]),
+                  ),
+                ],
+              ),
+            ),
           ],
         );
 
       case 'file':
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.insert_drive_file_outlined,
-              color: AppColors.textPrimary,
-              size: 18,
-            ),
-            const SizedBox(width: AppSpacing.xs),
-            Flexible(
-              child: Text(
-                message.content,
-                style: const TextStyle(
-                  fontFamily: 'Nunito',
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
-                  color: AppColors.textPrimary,
+        final fileName = message.content.replaceAll('📄 ', '');
+        return Padding(
+          padding: const EdgeInsets.all(AppSpacing.sm),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 44, height: 44,
+                decoration: BoxDecoration(
+                  color: isMine ? Colors.white.withValues(alpha: 0.2) : AppColors.indigo.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.insert_drive_file_outlined, color: isMine ? Colors.white : AppColors.indigo, size: 24),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(message.content,
+                        style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600, fontSize: 13,
+                            color: isMine ? Colors.white : AppColors.textPrimary),
+                        maxLines: 2, overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 6),
+                    if (message.fileUrl != null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          GestureDetector(
+                            onTap: () => kIsWeb ? _openUrl(message.fileUrl!) : _openDocumentMobile(message.fileUrl!, fileName),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: isMine ? Colors.white.withValues(alpha: 0.2) : AppColors.indigo.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                Icon(Icons.open_in_new_rounded, size: 12, color: isMine ? Colors.white : AppColors.indigo),
+                                const SizedBox(width: 3),
+                                Text('Open', style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w700, fontSize: 11,
+                                    color: isMine ? Colors.white : AppColors.indigo)),
+                              ]),
+                            ),
+                          ),
+                          const SizedBox(width: AppSpacing.sm),
+                          GestureDetector(
+                            onTap: () => kIsWeb ? _downloadUrl(message.fileUrl!) : _downloadDocumentMobile(message.fileUrl!, fileName),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: isMine ? Colors.white.withValues(alpha: 0.2) : AppColors.coral.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                Icon(Icons.download_rounded, size: 12, color: isMine ? Colors.white : AppColors.coral),
+                                const SizedBox(width: 3),
+                                Text('Download', style: TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w700, fontSize: 11,
+                                    color: isMine ? Colors.white : AppColors.coral)),
+                              ]),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         );
 
       default:
-        return Text(
-          message.content,
-          style: const TextStyle(
-            fontFamily: 'Nunito',
-            fontWeight: FontWeight.w400,
-            fontSize: 14,
-            color: AppColors.textPrimary,
-          ),
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+          child: Text(message.content,
+              style: const TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w400, fontSize: 14, color: AppColors.textPrimary)),
         );
     }
   }
 
-  // ── Input bar ──────────────────────────────────────────────────
   Widget _buildInputBar() {
+    final hasPending = _pendingAttachments.isNotEmpty;
     return Container(
       padding: EdgeInsets.only(
-        left:   AppSpacing.md,
-        right:  AppSpacing.md,
-        top:    AppSpacing.sm,
-        bottom: MediaQuery.of(context).viewInsets.bottom +
-            AppSpacing.md,
+        left: AppSpacing.md, right: AppSpacing.md, top: AppSpacing.sm,
+        bottom: MediaQuery.of(context).viewInsets.bottom + AppSpacing.md,
       ),
       decoration: const BoxDecoration(
         color: AppColors.cardSurface,
-        border: Border(
-          top: BorderSide(color: AppColors.elevated),
-        ),
+        border: Border(top: BorderSide(color: AppColors.elevated)),
       ),
       child: Row(
         children: [
-
-          // ── Attachment button ──────────────────────
           IconButton(
-            icon: const Icon(
-              Icons.attach_file_rounded,
-              color: AppColors.textMuted,
-            ),
-            onPressed: _isUploading
-                ? null
-                : _showAttachmentPicker,
+            icon: const Icon(Icons.attach_file_rounded, color: AppColors.textMuted),
+            onPressed: _isUploading ? null : _showAttachmentPicker,
           ),
-
-          // ── Book session button ────────────────────
           IconButton(
-            icon: const Icon(
-              Icons.add_circle_outline_rounded,
-              color: AppColors.indigo,
+            icon: const Icon(Icons.add_circle_outline_rounded, color: AppColors.indigo),
+            onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Book session — coming soon'), backgroundColor: AppColors.indigo),
             ),
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Book session — coming soon'),
-                  backgroundColor: AppColors.indigo,
-                ),
-              );
-            },
           ),
-
-          // ── Text field ─────────────────────────────
-          Expanded(
-            child: TextField(
-              controller: _messageController,
-              style: AppTextStyles.body.copyWith(
-                color: AppColors.textPrimary,
-              ),
-              maxLines: null,
-              textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(
-                hintText: 'Type a message...',
-                hintStyle: TextStyle(
-                  color: AppColors.textMuted,
-                  fontFamily: 'Nunito',
-                  fontSize: 14,
-                ),
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                isDense: true,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: AppSpacing.sm,
-                  vertical: AppSpacing.sm,
+          if (!hasPending)
+            Expanded(
+              child: TextField(
+                controller: _messageController,
+                style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
+                maxLines: null,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  hintText: 'Type a message...',
+                  hintStyle: TextStyle(color: AppColors.textMuted, fontFamily: 'Nunito', fontSize: 14),
+                  border: InputBorder.none, enabledBorder: InputBorder.none, focusedBorder: InputBorder.none,
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.sm),
                 ),
               ),
             ),
-          ),
-
-          // ── Send button ────────────────────────────
+          if (hasPending)
+            Expanded(
+              child: Text('Tap ➤ to send ${_pendingAttachments.length} file(s)',
+                  style: const TextStyle(fontFamily: 'Nunito', fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.indigo)),
+            ),
           GestureDetector(
-            onTap: _isSending ? null : _sendMessage,
+            onTap: (_isSending || _isUploading) ? null : hasPending ? _sendPendingAttachments : _sendMessage,
             child: Container(
-              width: 40,
-              height: 40,
-              decoration: const BoxDecoration(
-                color: AppColors.coral,
-                shape: BoxShape.circle,
-              ),
-              child: _isSending
-                  ? const Padding(
-                      padding: EdgeInsets.all(10),
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Icon(
-                      Icons.send_rounded,
-                      color: Colors.white,
-                      size: 18,
-                    ),
+              width: 40, height: 40,
+              decoration: BoxDecoration(color: hasPending ? AppColors.green : AppColors.coral, shape: BoxShape.circle),
+              child: (_isSending || _isUploading)
+                  ? const Padding(padding: EdgeInsets.all(10),
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
             ),
           ),
-
         ],
+      ),
+    );
+  }
+}
+
+// ── Full screen image viewer ───────────────────────────────────────
+class _FullScreenImageViewer extends StatelessWidget {
+  final String imageUrl;
+  final VoidCallback onDownload;
+
+  const _FullScreenImageViewer({required this.imageUrl, required this.onDownload});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.close_rounded, color: Colors.white),
+          onPressed: () => Navigator.pop(context),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download_rounded, color: Colors.white),
+            onPressed: onDownload,
+            tooltip: 'Save to gallery',
+          ),
+        ],
+      ),
+      body: PhotoView(
+        imageProvider: NetworkImage(imageUrl),
+        minScale: PhotoViewComputedScale.contained,
+        maxScale: PhotoViewComputedScale.covered * 3,
+        backgroundDecoration: const BoxDecoration(color: Colors.black),
+        loadingBuilder: (context, event) => const Center(child: CircularProgressIndicator(color: AppColors.indigo)),
+        errorBuilder: (context, error, stackTrace) =>
+            const Center(child: Icon(Icons.broken_image_outlined, color: Colors.white, size: 64)),
       ),
     );
   }
