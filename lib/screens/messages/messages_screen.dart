@@ -255,16 +255,18 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 
   String _getPreview(MessageModel? message) {
-    if (message == null) return 'Say hello! 👋';
-    switch (message.messageType) {
-      case 'image':
-        return '📷 Image';
-      case 'file':
-        return '📄 File';
-      case 'system':
-        return message.content;
-      default:
-        return message.content;
-    }
+  if (message == null) return 'Say hello! 👋';
+  switch (message.messageType) {
+    case 'image':
+      return '📷 Image';
+    case 'file':
+      return '📄 File';
+    case 'system':
+      return message.content;
+    case 'session_proposal':           // ← ADD THIS
+      return '📅 Session Proposal';   // ← ADD THIS
+    default:
+      return message.content;
   }
+}
 }

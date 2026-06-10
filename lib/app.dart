@@ -18,6 +18,10 @@ import 'screens/menu/help_screen.dart';
 import 'screens/menu/availability_screen.dart';
 import 'screens/menu/settings/change_password_screen.dart';
 import 'screens/menu/settings/about_screen.dart';
+import 'screens/community/community_screen.dart';
+import 'screens/schedule/schedule_screen.dart';
+import 'screens/profile/my_profile_screen.dart';
+import 'screens/profile/saved_profiles_screen.dart';
 
 
 class SkillSwapApp extends StatelessWidget {
@@ -40,7 +44,7 @@ class SkillSwapApp extends StatelessWidget {
 
         // ── Profile Setup ─────────────────────────────────────────
         '/profile-setup-1':   (_) => const ProfileSetupStep1Screen(),
-        '/profile-setup-2': (_) => const ProfileSetupStep2Screen(),
+        '/profile-setup-2':   (_) => const ProfileSetupStep2Screen(),
 
         // ── Main ──────────────────────────────────────────────────
         '/home':              (_) => const HomeScreen(),
@@ -57,97 +61,17 @@ class SkillSwapApp extends StatelessWidget {
         '/help':              (_) => const HelpScreen(),
         '/availability':      (_) => const AvailabilityScreen(),
 
-        // ── Member 2 screens — placeholders until built ───────────
-        '/schedule': (_) => const _PlaceholderScreen(
-          label: 'Schedule',
-          icon: Icons.calendar_today_outlined,
-        ),
-        '/my-profile': (_) => const _PlaceholderScreen(
-          label: 'My Profile',
-          icon: Icons.person_outline_rounded,
-        ),
-        '/saved-profiles': (_) => const _PlaceholderScreen(
-          label: 'Saved Profiles',
-          icon: Icons.bookmark_outline_rounded,
-        ),
+        // ── Schedule ──────────────────────────────────────────────
+        '/schedule':          (_) => const ScheduleScreen(),
 
-        // ── Member 3 screens — placeholders until built ───────────
-        '/community': (_) => const _PlaceholderScreen(
-          label: 'Community',
-          icon: Icons.groups_outlined,
-        ),
+        // ── Profile ───────────────────────────────────────────────
+        '/my-profile':        (_) => const MyProfileScreen(),
+        '/saved-profiles':    (_) => const SavedProfilesScreen(),
+
+        // ── Community ─────────────────────────────────────────────
+        '/community':         (_) => const CommunityScreen(),
 
       },
-    );
-  }
-}
-
-// ── Placeholder screen ─────────────────────────────────────────────
-// Replace each route above with real screen import when Member builds it
-class _PlaceholderScreen extends StatelessWidget {
-  final String label;
-  final IconData icon;
-
-  const _PlaceholderScreen({
-    required this.label,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0D1B2A),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0D1B2A),
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_rounded,
-            color: Colors.white,
-          ),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text(
-          label,
-          style: const TextStyle(
-            fontFamily: 'Nunito',
-            fontWeight: FontWeight.w700,
-            fontSize: 18,
-            color: Colors.white,
-          ),
-        ),
-      ),
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 64,
-              color: const Color(0xFF9999BB),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              label,
-              style: const TextStyle(
-                fontFamily: 'Nunito',
-                fontWeight: FontWeight.w700,
-                fontSize: 20,
-                color: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Being built by team member',
-              style: TextStyle(
-                fontFamily: 'Nunito',
-                fontSize: 14,
-                color: Color(0xFF9999BB),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

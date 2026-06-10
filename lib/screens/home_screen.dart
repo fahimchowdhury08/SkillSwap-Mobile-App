@@ -16,6 +16,7 @@ import 'swap/swap_proposal_sheet.dart';
 import 'notification_screen.dart';
 import 'messages/messages_screen.dart';
 import 'messages/chat_screen.dart';
+import 'profile/my_profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -34,19 +35,25 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isProfileComplete               = false;
 
   @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
+void initState() {
+  super.initState();
+  _loadData();
+}
+
+@override
+void didChangeDependencies() {
+  super.didChangeDependencies();
+  _loadMatchedUsers();
+}
 
   Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-    try {
-      await Future.wait([
-        _loadCurrentUser(),
-        _loadMatches(),
-        _loadMatchedUsers(),
-      ]);
+  setState(() => _isLoading = true);
+  try {
+    await Future.wait([
+      _loadCurrentUser(),
+      _loadMatches(),
+      _loadMatchedUsers(),
+    ]);
     } catch (e) {
       debugPrint('Home load error: $e');
     } finally {
@@ -275,7 +282,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _buildHomeFeed(),
     const SwapScreen(),
     const MessagesScreen(),
-    const _PlaceholderScreen(label: 'My Profile'),
+    const MyProfileScreen(),
   ];
 
   @override

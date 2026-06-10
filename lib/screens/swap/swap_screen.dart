@@ -39,19 +39,17 @@ class _SwapScreenState extends State<SwapScreen>
     super.dispose();
   }
 
-  // ── Load received — one join query ─────────────────────────────
+  // ── Load received — ALL statuses (pending + accepted + rejected)
   Future<void> _loadReceived() async {
     setState(() => _isLoadingReceived = true);
     try {
       final userId = SupabaseService.currentUserId;
       if (userId == null) return;
 
-      // One query — joins sender user data directly
       final res = await SupabaseService.client
           .from('swaps')
           .select('*, sender:users!sender_id(id, full_name, avatar_url, institution)')
           .eq('receiver_id', userId)
-          .eq('status', 'pending')
           .order('created_at', ascending: false);
 
       setState(() {
@@ -73,14 +71,13 @@ class _SwapScreenState extends State<SwapScreen>
     }
   }
 
-  // ── Load sent — one join query ─────────────────────────────────
+  // ── Load sent — ALL statuses ───────────────────────────────────
   Future<void> _loadSent() async {
     setState(() => _isLoadingSent = true);
     try {
       final userId = SupabaseService.currentUserId;
       if (userId == null) return;
 
-      // One query — joins receiver user data directly
       final res = await SupabaseService.client
           .from('swaps')
           .select('*, receiver:users!receiver_id(id, full_name, avatar_url, institution)')
@@ -134,10 +131,27 @@ class _SwapScreenState extends State<SwapScreen>
         data:   {'swap_id': swap.id},
       );
 
+      // Update status locally instead of removing
       setState(() {
-        _received.removeWhere(
+        final index = _received.indexWhere(
           (item) => (item['swap'] as SwapModel).id == swap.id,
         );
+        if (index != -1) {
+          final updatedSwap = SwapModel(
+            id:            swap.id,
+            senderId:      swap.senderId,
+            receiverId:    swap.receiverId,
+            senderSkill:   swap.senderSkill,
+            receiverSkill: swap.receiverSkill,
+            status:        'accepted',
+            message:       swap.message,
+            createdAt:     swap.createdAt,
+          );
+          _received[index] = {
+            'swap':   updatedSwap,
+            'sender': sender,
+          };
+        }
       });
 
       if (!mounted) return;
@@ -171,10 +185,28 @@ class _SwapScreenState extends State<SwapScreen>
           .update({'status': 'rejected'})
           .eq('id', swap.id);
 
+      // Update status locally
       setState(() {
-        _received.removeWhere(
+        final index = _received.indexWhere(
           (item) => (item['swap'] as SwapModel).id == swap.id,
         );
+        if (index != -1) {
+          final sender = _received[index]['sender'] as UserModel;
+          final updatedSwap = SwapModel(
+            id:            swap.id,
+            senderId:      swap.senderId,
+            receiverId:    swap.receiverId,
+            senderSkill:   swap.senderSkill,
+            receiverSkill: swap.receiverSkill,
+            status:        'rejected',
+            message:       swap.message,
+            createdAt:     swap.createdAt,
+          );
+          _received[index] = {
+            'swap':   updatedSwap,
+            'sender': sender,
+          };
+        }
       });
 
       if (!mounted) return;
@@ -194,6 +226,11 @@ class _SwapScreenState extends State<SwapScreen>
       );
     }
   }
+
+  // ── Count pending received ─────────────────────────────────────
+  int get _pendingCount => _received
+      .where((item) => (item['swap'] as SwapModel).status == 'pending')
+      .length;
 
   @override
   Widget build(BuildContext context) {
@@ -215,9 +252,9 @@ class _SwapScreenState extends State<SwapScreen>
           ),
           tabs: [
             Tab(
-              text: _received.isEmpty
-                  ? 'Received'
-                  : 'Received (${_received.length})',
+              text: _pendingCount > 0
+                  ? 'Received ($_pendingCount)'
+                  : 'Received',
             ),
             const Tab(text: 'Sent'),
           ],
@@ -266,8 +303,7 @@ class _SwapScreenState extends State<SwapScreen>
       return const EmptyState(
         icon: Icons.send_outlined,
         title: 'No sent requests yet',
-        subtitle:
-            'Go to a profile and tap Swap to send your first request',
+        subtitle: 'Go to a profile and tap Swap to send your first request',
       );
     }
     return RefreshIndicator(
@@ -299,7 +335,7 @@ class _SwapScreenState extends State<SwapScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
 
-          // Sender info
+          // ── Sender info ──────────────────────────────
           Row(
             children: [
               GradientAvatar(
@@ -312,28 +348,19 @@ class _SwapScreenState extends State<SwapScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      sender.displayName,
-                      style: AppTextStyles.bodyBold,
-                    ),
+                    Text(sender.displayName, style: AppTextStyles.bodyBold),
                     if (sender.institution != null)
-                      Text(
-                        sender.institution!,
-                        style: AppTextStyles.caption,
-                      ),
+                      Text(sender.institution!, style: AppTextStyles.caption),
                   ],
                 ),
               ),
-              Text(
-                timeago.format(swap.createdAt),
-                style: AppTextStyles.caption,
-              ),
+              Text(timeago.format(swap.createdAt), style: AppTextStyles.caption),
             ],
           ),
 
           const SizedBox(height: AppSpacing.md),
 
-          // Skill exchange
+          // ── Skill exchange ───────────────────────────
           Container(
             padding: const EdgeInsets.all(AppSpacing.md),
             decoration: BoxDecoration(
@@ -357,11 +384,8 @@ class _SwapScreenState extends State<SwapScreen>
                     ],
                   ),
                 ),
-                const Icon(
-                  Icons.swap_horiz_rounded,
-                  color: AppColors.indigo,
-                  size: 24,
-                ),
+                const Icon(Icons.swap_horiz_rounded,
+                    color: AppColors.indigo, size: 24),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -381,14 +405,12 @@ class _SwapScreenState extends State<SwapScreen>
             ),
           ),
 
-          // Message
+          // ── Message ──────────────────────────────────
           if (swap.message != null) ...[
             const SizedBox(height: AppSpacing.sm),
             Text(
               '"${swap.message}"',
-              style: AppTextStyles.body.copyWith(
-                fontStyle: FontStyle.italic,
-              ),
+              style: AppTextStyles.body.copyWith(fontStyle: FontStyle.italic),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
@@ -396,59 +418,95 @@ class _SwapScreenState extends State<SwapScreen>
 
           const SizedBox(height: AppSpacing.md),
 
-          // Action buttons
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => _rejectSwap(swap),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.red,
-                    side: const BorderSide(color: AppColors.red),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(100),
+          // ── Pending: Accept/Reject buttons ───────────
+          // ── Accepted/Rejected: status badge ──────────
+          if (swap.status == 'pending')
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => _rejectSwap(swap),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.red,
+                      side: const BorderSide(color: AppColors.red),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(100),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: AppSpacing.sm,
+                      ),
                     ),
-                    padding: const EdgeInsets.symmetric(
-                      vertical: AppSpacing.sm,
-                    ),
-                  ),
-                  child: const Text(
-                    '✕ Reject',
-                    style: TextStyle(
-                      fontFamily: 'Nunito',
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: AppSpacing.md),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => _acceptSwap(swap, sender),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.green,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(100),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      vertical: AppSpacing.sm,
-                    ),
-                  ),
-                  child: const Text(
-                    '✓ Accept',
-                    style: TextStyle(
-                      fontFamily: 'Nunito',
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
+                    child: const Text(
+                      '✕ Reject',
+                      style: TextStyle(
+                        fontFamily: 'Nunito',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
                     ),
                   ),
                 ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => _acceptSwap(swap, sender),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.green,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(100),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: AppSpacing.sm,
+                      ),
+                    ),
+                    child: const Text(
+                      '✓ Accept',
+                      style: TextStyle(
+                        fontFamily: 'Nunito',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          else
+            Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.md,
+                  vertical: AppSpacing.xs,
+                ),
+                decoration: BoxDecoration(
+                  color: (swap.status == 'accepted'
+                          ? AppColors.green
+                          : AppColors.red)
+                      .withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(
+                    color: (swap.status == 'accepted'
+                            ? AppColors.green
+                            : AppColors.red)
+                        .withValues(alpha: 0.4),
+                  ),
+                ),
+                child: Text(
+                  swap.status == 'accepted' ? '✓ Accepted' : '✕ Rejected',
+                  style: TextStyle(
+                    fontFamily: 'Nunito',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                    color: swap.status == 'accepted'
+                        ? AppColors.green
+                        : AppColors.red,
+                  ),
+                ),
               ),
-            ],
-          ),
+            ),
 
         ],
       ),
@@ -484,7 +542,7 @@ class _SwapScreenState extends State<SwapScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
 
-          // Receiver info
+          // ── Receiver info ────────────────────────────
           Row(
             children: [
               GradientAvatar(
@@ -497,15 +555,9 @@ class _SwapScreenState extends State<SwapScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      receiver.displayName,
-                      style: AppTextStyles.bodyBold,
-                    ),
+                    Text(receiver.displayName, style: AppTextStyles.bodyBold),
                     if (receiver.institution != null)
-                      Text(
-                        receiver.institution!,
-                        style: AppTextStyles.caption,
-                      ),
+                      Text(receiver.institution!, style: AppTextStyles.caption),
                   ],
                 ),
               ),
@@ -536,7 +588,7 @@ class _SwapScreenState extends State<SwapScreen>
 
           const SizedBox(height: AppSpacing.md),
 
-          // Skill exchange
+          // ── Skill exchange ───────────────────────────
           Container(
             padding: const EdgeInsets.all(AppSpacing.md),
             decoration: BoxDecoration(
@@ -560,11 +612,8 @@ class _SwapScreenState extends State<SwapScreen>
                     ],
                   ),
                 ),
-                const Icon(
-                  Icons.swap_horiz_rounded,
-                  color: AppColors.indigo,
-                  size: 24,
-                ),
+                const Icon(Icons.swap_horiz_rounded,
+                    color: AppColors.indigo, size: 24),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.end,

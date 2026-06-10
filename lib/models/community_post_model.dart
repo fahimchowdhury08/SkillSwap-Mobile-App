@@ -1,3 +1,6 @@
+// ── Updated CommunityPostModel ─────────────────────────────────────
+// Supports: article | image | video | file | youtube
+// Replace lib/models/community_post_model.dart with this file
 
 class CommunityPostModel {
   final String id;
@@ -10,12 +13,10 @@ class CommunityPostModel {
   final int likeCount;
   final DateTime createdAt;
 
-  // Populated from JOIN with users table in one query
-  // Never fetch these separately — always use the join query
+  // From JOIN with users table
   final String? posterName;
   final String? posterAvatarUrl;
 
-  // Tracked locally — whether current user has liked this post
   bool isLikedByMe;
 
   CommunityPostModel({
@@ -44,9 +45,6 @@ class CommunityPostModel {
       articleUrl:    j['article_url'],
       likeCount:     j['like_count'] ?? 0,
       createdAt:     DateTime.parse(j['created_at']),
-
-      // These come from the JOIN with users table
-      // Query: .select('*, users(full_name, avatar_url)')
       posterName:      j['users']?['full_name'],
       posterAvatarUrl: j['users']?['avatar_url'],
     );
@@ -54,25 +52,25 @@ class CommunityPostModel {
 
   Map<String, dynamic> toJson() {
     return {
+      'id':           id,
       'community_id': communityId,
       'user_id':      userId,
       'content_type': contentType,
       'caption':      caption,
       'file_url':     fileUrl,
       'article_url':  articleUrl,
+      'like_count':   likeCount,
+      'created_at':   createdAt.toIso8601String(),
     };
   }
 
-  // Helpers — check content type easily
+  // Content type helpers
   bool get isImage   => contentType == 'image';
   bool get isVideo   => contentType == 'video';
   bool get isFile    => contentType == 'file';
   bool get isArticle => contentType == 'article';
+  bool get isYoutube => contentType == 'youtube';
+  bool get hasMedia  => fileUrl != null || articleUrl != null;
 
-  // Helper — returns true if this post has any media to display
-  bool get hasMedia => fileUrl != null || articleUrl != null;
-
-  // Helper — returns display name of poster
-  // Falls back to "Unknown" if join query didn't include user data
   String get posterDisplayName => posterName ?? 'Unknown';
 }
