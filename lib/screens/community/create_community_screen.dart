@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -17,15 +16,15 @@ class CreateCommunityScreen extends StatefulWidget {
 }
 
 class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
-  final _nameController        = TextEditingController();
-  final _descController        = TextEditingController();
-  final _skillTagController    = TextEditingController();
-  final _questionController    = TextEditingController();
+  final _nameController     = TextEditingController();
+  final _descController     = TextEditingController();
+  final _skillTagController = TextEditingController();
+  final _questionController = TextEditingController();
 
-  bool _isLoading = false;
+  bool       _isLoading = false;
   Uint8List? _iconBytes;
+  String?    _iconExt;   // jpg or png
 
-  // Join questions list
   final List<String> _questions = [];
 
   @override
@@ -37,7 +36,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
     super.dispose();
   }
 
-  // ── Pick icon ──────────────────────────────────────────────────
+  // ── Pick community icon (image only — bytes are fine, always small) ──
   Future<void> _pickIcon() async {
     try {
       final picker = ImagePicker();
@@ -48,11 +47,17 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
       );
       if (picked == null) return;
       final bytes = await picked.readAsBytes();
-      setState(() => _iconBytes = bytes);
+      final ext   = picked.name.split('.').last.toLowerCase();
+      setState(() {
+        _iconBytes = bytes;
+        _iconExt   = (ext == 'png') ? 'png' : 'jpg';
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not pick image'), backgroundColor: AppColors.red),
+        const SnackBar(
+            content: Text('Could not pick image'),
+            backgroundColor: AppColors.red),
       );
     }
   }
@@ -60,8 +65,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
   // ── Add question ───────────────────────────────────────────────
   void _addQuestion() {
     final q = _questionController.text.trim();
-    if (q.isEmpty) return;
-    if (_questions.contains(q)) {
+    if (q.isEmpty || _questions.contains(q)) {
       _questionController.clear();
       return;
     }
@@ -71,7 +75,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
     });
   }
 
-  // ── Create community ───────────────────────────────────────────
+  // ── Create ─────────────────────────────────────────────────────
   Future<void> _create() async {
     if (_nameController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -87,7 +91,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
     try {
       final uid = SupabaseService.currentUserId!;
 
-      // 1 — Insert community
+      // 1 — Insert community row
       final commRes = await SupabaseService.client
           .from('communities')
           .insert({
@@ -106,41 +110,55 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
 
       final communityId = commRes['id'] as String;
 
-      // 2 — Upload icon if selected
+      // 2 — Upload icon (runs in parallel with step 3 & 4 below)
+      String? avatarUrl;
       if (_iconBytes != null) {
-        final fileName = 'community-icons/$communityId.jpg';
+        final fileName =
+            'community-icons/$communityId.${_iconExt ?? 'jpg'}';
+        final contentType =
+            _iconExt == 'png' ? 'image/png' : 'image/jpeg';
+
         await SupabaseService.client.storage
             .from('community-media')
             .uploadBinary(
               fileName,
               _iconBytes!,
-              fileOptions: const FileOptions(contentType: 'image/jpeg', upsert: true),
+              fileOptions: FileOptions(
+                  contentType: contentType, upsert: true),
             );
-        final url = SupabaseService.client.storage
+
+        avatarUrl = SupabaseService.client.storage
             .from('community-media')
             .getPublicUrl(fileName);
-        await SupabaseService.client
-            .from('communities')
-            .update({'avatar_url': url})
-            .eq('id', communityId);
       }
 
-      // 3 — Insert creator as admin member
-      await SupabaseService.client.from('community_members').insert({
-        'community_id': communityId,
-        'user_id':      uid,
-        'status':       'member',
-        'role':         'admin',
-      });
+      // 3 — Run the remaining DB writes in parallel
+      await Future.wait([
+        // Update avatar_url if we uploaded one
+        if (avatarUrl != null)
+          SupabaseService.client
+              .from('communities')
+              .update({'avatar_url': avatarUrl})
+              .eq('id', communityId),
 
-      // 4 — Insert join questions
-      for (int i = 0; i < _questions.length; i++) {
-        await SupabaseService.client.from('community_join_questions').insert({
+        // Insert creator as admin member
+        SupabaseService.client.from('community_members').insert({
           'community_id': communityId,
-          'question':     _questions[i],
-          'order_index':  i,
-        });
-      }
+          'user_id':      uid,
+          'status':       'member',
+          'role':         'admin',
+        }),
+
+        // Insert all join questions in ONE batch insert (not a loop)
+        if (_questions.isNotEmpty)
+          SupabaseService.client.from('community_join_questions').insert(
+            _questions.asMap().entries.map((e) => {
+              'community_id': communityId,
+              'question':     e.value,
+              'order_index':  e.key,
+            }).toList(),
+          ),
+      ]);
 
       if (!mounted) return;
 
@@ -151,7 +169,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
         ),
       );
 
-      // Navigate to the new community
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -164,7 +181,8 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed: $e'), backgroundColor: AppColors.red),
+        SnackBar(
+            content: Text('Failed: $e'), backgroundColor: AppColors.red),
       );
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -179,8 +197,9 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
         backgroundColor: AppColors.background,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_rounded, color: AppColors.textPrimary),
-          onPressed: () => Navigator.pop(context),
+          icon: const Icon(Icons.arrow_back_ios_rounded,
+              color: AppColors.textPrimary),
+          onPressed: _isLoading ? null : () => Navigator.pop(context),
         ),
         title: const Text('Create Community', style: AppTextStyles.heading2),
       ),
@@ -195,27 +214,46 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
               // ── Community icon ─────────────────────────────────
               Center(
                 child: GestureDetector(
-                  onTap: _pickIcon,
-                  child: Container(
-                    width: 90,
-                    height: 90,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      gradient: _iconBytes == null
-                          ? AppColors.indigoCoralGradient
-                          : null,
-                      color: _iconBytes != null ? AppColors.cardSurface : null,
-                    ),
-                    child: _iconBytes != null
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(20),
-                            child: Image.memory(_iconBytes!, fit: BoxFit.cover),
-                          )
-                        : const Icon(
-                            Icons.groups_rounded,
-                            size: 44,
-                            color: Colors.white,
+                  onTap: _isLoading ? null : _pickIcon,
+                  child: Stack(
+                    children: [
+                      Container(
+                        width: 90,
+                        height: 90,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          gradient: _iconBytes == null
+                              ? AppColors.indigoCoralGradient
+                              : null,
+                          color: _iconBytes != null
+                              ? AppColors.cardSurface
+                              : null,
+                        ),
+                        child: _iconBytes != null
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(20),
+                                child: Image.memory(_iconBytes!,
+                                    fit: BoxFit.cover),
+                              )
+                            : const Icon(Icons.groups_rounded,
+                                size: 44, color: Colors.white),
+                      ),
+                      // Edit badge
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: Container(
+                          width: 26,
+                          height: 26,
+                          decoration: const BoxDecoration(
+                            color: AppColors.coral,
+                            shape: BoxShape.circle,
                           ),
+                          child: const Icon(Icons.edit_rounded,
+                              size: 14, color: Colors.white),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -235,7 +273,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
 
               const SizedBox(height: AppSpacing.xl),
 
-              // ── Form ───────────────────────────────────────────
+              // ── Form fields ────────────────────────────────────
               Container(
                 decoration: BoxDecoration(
                   color: AppColors.cardSurface,
@@ -249,8 +287,11 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
                       hint: 'e.g. Python World',
                       icon: Icons.groups_outlined,
                     ),
-                    const Divider(color: AppColors.elevated, height: 1,
-                        indent: 16, endIndent: 16),
+                    const Divider(
+                        color: AppColors.elevated,
+                        height: 1,
+                        indent: 16,
+                        endIndent: 16),
                     _buildField(
                       controller: _descController,
                       label: 'Description',
@@ -258,8 +299,11 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
                       icon: Icons.description_outlined,
                       maxLines: 3,
                     ),
-                    const Divider(color: AppColors.elevated, height: 1,
-                        indent: 16, endIndent: 16),
+                    const Divider(
+                        color: AppColors.elevated,
+                        height: 1,
+                        indent: 16,
+                        endIndent: 16),
                     _buildField(
                       controller: _skillTagController,
                       label: 'Skill Tag',
@@ -272,15 +316,16 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
 
               const SizedBox(height: AppSpacing.xl),
 
-              // ── Join Questions section ─────────────────────────
+              // ── Join Questions ─────────────────────────────────
               Row(
                 children: [
-                  const Text('❓ Join Questions', style: AppTextStyles.heading3),
+                  const Text('❓ Join Questions',
+                      style: AppTextStyles.heading3),
                   const SizedBox(width: AppSpacing.xs),
                   Text(
                     '(optional)',
-                    style: AppTextStyles.caption.copyWith(
-                        color: AppColors.textMuted),
+                    style: AppTextStyles.caption
+                        .copyWith(color: AppColors.textMuted),
                   ),
                 ],
               ),
@@ -291,63 +336,66 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
               ),
               const SizedBox(height: AppSpacing.md),
 
-              // Existing questions
-              if (_questions.isNotEmpty) ...[
-                ..._questions.asMap().entries.map((entry) {
-                  final i = entry.key;
-                  final q = entry.value;
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                    decoration: BoxDecoration(
-                      color: AppColors.cardSurface,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.elevated),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 22,
-                          height: 22,
-                          decoration: const BoxDecoration(
-                            color: AppColors.indigo,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Center(
-                            child: Text(
-                              '${i + 1}',
-                              style: const TextStyle(
-                                fontFamily: 'Nunito',
-                                fontWeight: FontWeight.w700,
-                                fontSize: 11,
-                                color: Colors.white,
-                              ),
+              // Existing questions list
+              ..._questions.asMap().entries.map((entry) {
+                final i = entry.key;
+                final q = entry.value;
+                return Container(
+                  margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                  decoration: BoxDecoration(
+                    color: AppColors.cardSurface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.elevated),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 22,
+                        height: 22,
+                        decoration: const BoxDecoration(
+                          color: AppColors.indigo,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Center(
+                          child: Text(
+                            '${i + 1}',
+                            style: const TextStyle(
+                              fontFamily: 'Nunito',
+                              fontWeight: FontWeight.w700,
+                              fontSize: 11,
+                              color: Colors.white,
                             ),
                           ),
                         ),
-                        const SizedBox(width: AppSpacing.sm),
-                        Expanded(child: Text(q, style: AppTextStyles.body)),
-                        GestureDetector(
-                          onTap: () => setState(() => _questions.removeAt(i)),
-                          child: const Icon(Icons.close_rounded,
-                              size: 18, color: AppColors.red),
-                        ),
-                      ],
-                    ),
-                  );
-                }),
-                const SizedBox(height: AppSpacing.sm),
-              ],
+                      ),
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(
+                          child: Text(q, style: AppTextStyles.body)),
+                      GestureDetector(
+                        onTap: () =>
+                            setState(() => _questions.removeAt(i)),
+                        child: const Icon(Icons.close_rounded,
+                            size: 18, color: AppColors.red),
+                      ),
+                    ],
+                  ),
+                );
+              }),
 
-              // Add question input
+              if (_questions.isNotEmpty)
+                const SizedBox(height: AppSpacing.sm),
+
+              // Add question row
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _questionController,
-                      style: AppTextStyles.body.copyWith(
-                          color: AppColors.textPrimary),
+                      enabled: !_isLoading,
+                      style: AppTextStyles.body
+                          .copyWith(color: AppColors.textPrimary),
                       onSubmitted: (_) => _addQuestion(),
                       decoration: InputDecoration(
                         hintText: 'Type a question and tap +',
@@ -367,13 +415,14 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
                               color: AppColors.indigo, width: 1.5),
                         ),
                         contentPadding: const EdgeInsets.symmetric(
-                            horizontal: AppSpacing.md, vertical: AppSpacing.md),
+                            horizontal: AppSpacing.md,
+                            vertical: AppSpacing.md),
                       ),
                     ),
                   ),
                   const SizedBox(width: AppSpacing.sm),
                   GestureDetector(
-                    onTap: _addQuestion,
+                    onTap: _isLoading ? null : _addQuestion,
                     child: Container(
                       width: 48,
                       height: 48,
@@ -433,13 +482,15 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen> {
             children: [
               Padding(
                 padding: const EdgeInsets.only(top: 2),
-                child: Icon(icon, size: 18, color: AppColors.textMuted),
+                child:
+                    Icon(icon, size: 18, color: AppColors.textMuted),
               ),
               const SizedBox(width: AppSpacing.sm),
               Expanded(
                 child: TextField(
                   controller: controller,
                   maxLines: maxLines,
+                  enabled: !_isLoading,
                   style: AppTextStyles.bodyBold,
                   decoration: InputDecoration(
                     hintText: hint,
